@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hapbeat"
+version = "0.1.0"
+description = "Python SDK for driving Hapbeat haptic devices over Wi-Fi UDP"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Hapbeat", email = "yus988@hapbeat.com" }]
+keywords = ["hapbeat", "haptics", "udp", "osc", "vr", "research", "psychopy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia",
+    "Topic :: Scientific/Engineering :: Human Machine Interfaces",
+    "Topic :: System :: Hardware",
+]
+# Core level-1 has zero runtime dependencies — stdlib socket only.
+dependencies = []
+
+[project.optional-dependencies]
+# Generic OSC bridge (TouchOSC / Max / TouchDesigner / DAWs).
+osc = ["python-osc>=1.8"]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://devtools.hapbeat.com/"
+Documentation = "https://devtools.hapbeat.com/docs/sdk-integration/"
+Repository = "https://github.com/hapbeat/hapbeat-python-sdk"
+Issues = "https://github.com/hapbeat/hapbeat-python-sdk/issues"
+
+[project.scripts]
+hapbeat = "hapbeat.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
