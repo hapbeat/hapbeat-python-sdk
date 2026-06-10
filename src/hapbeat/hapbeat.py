@@ -78,9 +78,15 @@ class Hapbeat:
         self._keepalive_interval = keepalive_interval
         self._keepalive_stop: Optional[threading.Event] = None
         self._keepalive_thread: Optional[threading.Thread] = None
+        self._opened = False
 
     # ── Lifecycle ───────────────────────────────────────────────────
     def open(self) -> "Hapbeat":
+        """Open the transport. Idempotent: ``connect()`` and ``__enter__``
+        may both call it, so a second call while open is a no-op."""
+        if self._opened:
+            return self
+        self._opened = True
         self._client.add_pong_listener(self._on_pong)
         self._client.open()
         if self._keepalive and self.app_name:
@@ -88,6 +94,9 @@ class Hapbeat:
         return self
 
     def close(self) -> None:
+        if not self._opened:
+            return
+        self._opened = False
         # Tell the device this app is leaving so the OLED clears.
         if self.app_name:
             try:
@@ -95,6 +104,7 @@ class Hapbeat:
             except Exception:  # noqa: BLE001
                 pass
         self._stop_keepalive()
+        self._client.remove_pong_listener(self._on_pong)
         self._client.close()
 
     def __enter__(self) -> "Hapbeat":
