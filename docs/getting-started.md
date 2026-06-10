@@ -61,5 +61,8 @@ See the addressing spec in `hapbeat-contracts/specs/device-addressing.md`.
 
 ## Next steps
 
+- [Examples](https://github.com/hapbeat/hapbeat-python-sdk/tree/master/examples) —
+  complete sample apps: a psychophysics experiment, breathing pacer, haptic
+  metronome, live trigger pad, task notifier, and Morse transmitter.
 - [OSC bridge](osc.md) — drive Hapbeat from TouchOSC / Max / TouchDesigner with no code.
 - `hapbeat --help` — the CLI (`scan`, `play`, `stop-all`, `osc-bridge`).

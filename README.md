@@ -85,6 +85,13 @@ hapbeat play impact.hit --gain 0.3
 hapbeat stop-all
 ```
 
+## Examples
+
+Ready-to-run sample applications live in [examples/](examples/):
+a psychophysics experiment, a breathing pacer, a haptic metronome,
+a live trigger pad, a task-completion notifier, and a Morse transmitter.
+Each is a single stdlib-only file — see [examples/README.md](examples/README.md).
+
 ## License
 
 MIT © Hapbeat
