@@ -7,6 +7,7 @@ Examples::
     hapbeat stop impact.hit
     hapbeat stop-all
     hapbeat osc-bridge --listen 7702
+    hapbeat launchpad
 """
 
 from __future__ import annotations
@@ -51,6 +52,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_osc.add_argument("--listen", type=int, default=7702, help="OSC listen port (default 7702)")
     _add_common(p_osc)
 
+    p_lp = sub.add_parser(
+        "launchpad",
+        help="serve a local web page to try features from the browser",
+    )
+    p_lp.add_argument("--host", default="127.0.0.1", help="HTTP bind host (default 127.0.0.1)")
+    p_lp.add_argument("--http-port", type=int, default=7100, help="HTTP port (default 7100)")
+    p_lp.add_argument("--no-open", action="store_true", help="do not open a browser")
+    _add_common(p_lp)
+
     return parser
 
 
@@ -69,6 +79,12 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             hb.close()
         return 0
+
+    if args.command == "launchpad":
+        from .launchpad import serve
+
+        return serve(host=args.host, port=args.http_port, udp_port=args.port,
+                     target=args.target, open_browser=not args.no_open)
 
     hb = connect(port=args.port, default_target=getattr(args, "target", ""), keepalive=False)
     try:

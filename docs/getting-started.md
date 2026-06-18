@@ -12,7 +12,21 @@ Drive a Hapbeat device from a Python script in a few lines.
 ## Install
 
 ```bash
-pip install hapbeat
+pip install hapbeat            # library + CLI in your environment
+pipx install hapbeat          # CLI only (hapbeat scan / play / launchpad), isolated
+```
+
+> `pipx` installs the `hapbeat` command in its own environment, so it is great
+> for the CLI and the launchpad — but `import hapbeat` from your own scripts
+> (and the `examples/`) needs a regular `pip install` in a venv.
+
+## No-code: the launchpad
+
+Prefer clicking to coding? Run the launchpad and a browser page opens with
+buttons for play / metronome / breathing / Morse:
+
+```bash
+hapbeat launchpad
 ```
 
 ## Fire your first event

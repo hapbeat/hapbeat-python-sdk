@@ -4,6 +4,11 @@ Self-contained sample applications built on the level-1 fire API
 (`play` / `stop` / `EventMap` / discovery). Each one is a single file with no
 dependencies beyond the SDK itself -- copy it out and make it yours.
 
+> **Just want to click around?** Run `hapbeat launchpad` for a single browser
+> page that fires events and runs a metronome / breathing pacer / Morse live,
+> with no per-example launching. The files below are where you read and copy
+> the full code.
+
 | Sample | For | Highlights | Kit needs | Default event |
 |---|---|---|---|---|
 | [minimal.py](minimal.py) | everyone | the smallest possible script: discover, play, stop | 1 short one-shot | `impact.hit` |
