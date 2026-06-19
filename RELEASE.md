@@ -1,4 +1,4 @@
-# Releasing hapbeat (PyPI)
+# Releasing hapbeat-python-sdk (PyPI)
 
 ## 0. Gate — verify on a real device first
 
@@ -21,12 +21,12 @@ Confirm the device actually buzzes. Only then proceed.
 ## 1. One-time setup (PyPI Trusted Publishing — no tokens)
 
 1. PyPI -> https://pypi.org/manage/account/publishing/ -> **Add a pending publisher**
-   - Project: `hapbeat`  ·  Owner: `hapbeat`  ·  Repo: `hapbeat-python-sdk`
+   - Project: `hapbeat-python-sdk`  ·  Owner: `hapbeat`  ·  Repo: `hapbeat-python-sdk`
    - Workflow: `publish.yml`  ·  Environment: `pypi`
 2. Same on https://test.pypi.org for Environment `testpypi` (optional, for dry runs).
 3. GitHub repo **Settings -> Environments** -> create `pypi` and `testpypi`.
 
-(The name `hapbeat` was free on PyPI as of 2026-06-01.)
+(Distribution name is `hapbeat-python-sdk`; the import package stays `import hapbeat`.)
 
 ## 2. Release
 
@@ -48,5 +48,5 @@ python -m build && python -m twine upload dist/*
 
 ## Note — dependent package
 
-`hapbeat-vrchat` depends on `hapbeat`. Publish **this** package first; only then
-can `hapbeat-vrchat` resolve its dependency on PyPI.
+`hapbeat-vrchat` depends on this package (`hapbeat-python-sdk`). Publish **this**
+package first; only then can `hapbeat-vrchat` resolve its dependency on PyPI.

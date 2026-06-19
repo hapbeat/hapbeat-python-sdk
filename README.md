@@ -14,15 +14,15 @@ SDK.
 ## Install
 
 ```bash
-pip install hapbeat            # core (zero dependencies, stdlib socket only)
-pip install "hapbeat[osc]"     # + generic OSC bridge (TouchOSC / Max / TD)
+pip install hapbeat-python-sdk        # core (zero dependencies, stdlib socket only)
+pip install "hapbeat-python-sdk[osc]"   # + generic OSC bridge (TouchOSC / Max / TD)
 ```
 
 > PyPI publish is pending; until then install from source:
 > `pip install -e .` inside a clone, or `pip install git+https://github.com/hapbeat/hapbeat-python-sdk.git`.
 
 With **pipx** you get the `hapbeat` CLI (including the launchpad below) in an
-isolated environment: `pipx install hapbeat`. Note that pipx does *not* make
+isolated environment: `pipx install hapbeat-python-sdk`. Note that pipx does *not* make
 `import hapbeat` available to your own scripts — for the `examples/` use a
 normal `pip install` in a venv.
 
@@ -35,7 +35,7 @@ hapbeat launchpad          # opens http://127.0.0.1:7100 in your browser
 A single local web page to fire events, run a metronome, a breathing pacer,
 or send Morse — start and stop them live, no per-example launching. It serves
 a tiny stdlib HTTP server that relays button presses to the device over UDP
-(browsers can't send UDP directly). Works great with `pipx install hapbeat`.
+(browsers can't send UDP directly). Works great with `pipx install hapbeat-python-sdk`.
 
 ## Quick start
 

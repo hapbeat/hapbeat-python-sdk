@@ -3,7 +3,8 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hapbeat"
+# Distribution name (pip/pipx). The import package stays `import hapbeat`.
+name = "hapbeat-python-sdk"
 version = "0.1.0"
 description = "Python SDK for driving Hapbeat haptic devices over Wi-Fi UDP"
 readme = "README.md"

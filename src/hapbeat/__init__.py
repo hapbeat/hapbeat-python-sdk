@@ -24,7 +24,7 @@ try:  # populated from installed package metadata
     from importlib.metadata import PackageNotFoundError, version
 
     try:
-        __version__ = version("hapbeat")
+        __version__ = version("hapbeat-python-sdk")
     except PackageNotFoundError:  # running from a source checkout
         __version__ = "0.1.0+local"
 except ImportError:  # pragma: no cover

@@ -11,7 +11,7 @@ dedicated bridge that translates into these same calls.
 ## Run it
 
 ```bash
-pip install "hapbeat[osc]"
+pip install "hapbeat-python-sdk[osc]"
 hapbeat osc-bridge --listen 7702       # OSC in on 7702, relays to UDP 7700
 ```
 

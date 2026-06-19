@@ -12,8 +12,8 @@ Drive a Hapbeat device from a Python script in a few lines.
 ## Install
 
 ```bash
-pip install hapbeat            # library + CLI in your environment
-pipx install hapbeat          # CLI only (hapbeat scan / play / launchpad), isolated
+pip install hapbeat-python-sdk        # library + CLI in your environment
+pipx install hapbeat-python-sdk   # CLI only (hapbeat scan / play / launchpad), isolated
 ```
 
 > `pipx` installs the `hapbeat` command in its own environment, so it is great

@@ -15,7 +15,7 @@ translate the foreign schema into these calls.
 
 Requires the optional dependency::
 
-    pip install "hapbeat[osc]"
+    pip install "hapbeat-python-sdk[osc]"
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _require_pythonosc():
         from pythonosc.osc_server import BlockingOSCUDPServer
     except ImportError as exc:  # pragma: no cover - import-time guard
         raise ImportError(
-            "OSC support needs python-osc. Install with: pip install \"hapbeat[osc]\""
+            "OSC support needs python-osc. Install with: pip install \"hapbeat-python-sdk[osc]\""
         ) from exc
     return Dispatcher, BlockingOSCUDPServer
 
