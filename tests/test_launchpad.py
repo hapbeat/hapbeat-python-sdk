@@ -50,6 +50,19 @@ def test_page_is_ascii_and_complete():
     assert "examples/metronome.py" in launchpad.PAGE
 
 
+def test_default_bind_is_ephemeral():
+    # SDK default: never grab the well-known device port locally, so a plain
+    # script coexists with hapbeat-helper / Hapbeat Studio.
+    c = UdpClient(port=7700)
+    c.open()
+    try:
+        assert c._sock.getsockname()[1] not in (0, 7700)
+        assert c._bound_well_known is False
+        assert c.port == 7700  # still sends to the device's 7700
+    finally:
+        c.close()
+
+
 def test_bind_port_ephemeral_leaves_well_known_free():
     # The launchpad passes bind_port=0 so it never grabs UDP 7700 (which
     # hapbeat-helper owns for Studio). Verify the socket binds elsewhere and

@@ -38,15 +38,16 @@ class UdpClient:
         self,
         port: int = DEFAULT_PORT,
         broadcast_addr: str = DEFAULT_BROADCAST,
-        bind_port: Optional[int] = None,
+        bind_port: int = 0,
     ) -> None:
         self.port = port  # destination port (the device listens here)
-        # Local receive bind. Defaults to the destination port to catch async
-        # broadcast pushes; pass 0 to take an ephemeral port and leave the
-        # well-known 7700 to another owner (e.g. hapbeat-helper running for
-        # Hapbeat Studio) so both can run at once. PING replies still arrive
-        # at the ephemeral source port, so discovery keeps working.
-        self.bind_port = port if bind_port is None else bind_port
+        # Local receive bind. Default 0 = ephemeral: this leaves the
+        # well-known device port (7700) to the single host daemon that owns
+        # it (hapbeat-helper, serving Hapbeat Studio) so an SDK script and
+        # Studio coexist. PING replies still arrive at the ephemeral source
+        # port, so discovery keeps working. Pass ``bind_port=port`` only to
+        # also receive the device's unsolicited broadcasts (daemon use).
+        self.bind_port = bind_port
         self.broadcast_addr = broadcast_addr
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
