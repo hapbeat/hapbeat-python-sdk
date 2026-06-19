@@ -17,8 +17,10 @@ from __future__ import annotations
 
 from . import protocol
 from .client import DEFAULT_BROADCAST, DEFAULT_PORT, UdpClient
+from .clip import ClipStreamer
 from .eventmap import EventDef, EventMap
 from .hapbeat import Device, Hapbeat, connect
+from .wav import WavPcm, read_wav_pcm16
 
 try:  # populated from installed package metadata
     from importlib.metadata import PackageNotFoundError, version
@@ -36,6 +38,9 @@ __all__ = [
     "Device",
     "EventMap",
     "EventDef",
+    "ClipStreamer",
+    "WavPcm",
+    "read_wav_pcm16",
     "UdpClient",
     "protocol",
     "DEFAULT_PORT",

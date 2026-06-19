@@ -1,14 +1,21 @@
 """EventMap — the *tuning* side of the SDK, kept orthogonal to the fire side.
 
 Mirrors the Unity SDK's EventMap concept at level-1: a catalog that maps an
-event id to its default gain (and other per-event metadata). It is linked to
-the fire side only by event id, so triggers and tuning stay mutually
-independent.
+event id to its per-event haptic settings (default gain, loop, mode, and -- for
+clip events -- which WAV to stream). It is linked to the fire side only by
+event id, so *when/where* to fire (the caller) and *what/how* to play (this
+catalog) stay mutually independent.
 
-The canonical source of per-event default intensity is the kit manifest
-(schema 2.0.0, see hapbeat-contracts/specs/kit-format.md). ``intensity`` in the
-manifest is the recommended baseline gain; the SDK reads it so that
-``hb.play("event.id")`` (no explicit gain) fires at the authored strength.
+The canonical source is the kit manifest (schema 2.0.0, see
+hapbeat-contracts/specs/kit-format.md). It has two event buckets:
+
+  - ``events``        — **command** mode: the device plays a clip already
+    installed on it; the SDK just sends a PLAY with the event id.
+  - ``stream_events`` — **clip** mode: the SDK reads the event's WAV from the
+    kit's ``stream-clips/`` folder and UDP-streams it to the device.
+
+``play(event_id)`` branches on which bucket the event came from, so the caller
+writes the same one-liner either way.
 """
 
 from __future__ import annotations
@@ -21,52 +28,100 @@ from typing import Optional, Union
 
 @dataclass
 class EventDef:
-    """Per-event tuning resolved from a kit manifest (or set by hand)."""
+    """Per-event haptic settings resolved from a kit manifest (or by hand)."""
 
     event_id: str
     intensity: float = 1.0
     loop: bool = False
     device_wiper: Optional[int] = None
-    streaming: bool = False  # True if it came from the manifest stream_events bucket
+    streaming: bool = False  # True => clip mode (manifest stream_events bucket)
+    clip: str = ""           # WAV filename (clip mode), relative to stream-clips/
     note: str = ""
+
+    @property
+    def mode(self) -> str:
+        """``"clip"`` for stream events, ``"command"`` otherwise."""
+        return "clip" if self.streaming else "command"
 
 
 class EventMap:
-    """A catalog of event definitions keyed by event id."""
+    """A catalog of event definitions keyed by event id.
 
-    def __init__(self, events: Optional[dict[str, EventDef]] = None) -> None:
+    ``kit_dir`` (when known) is the folder that holds the manifest; clip-mode
+    WAVs are resolved relative to ``<kit_dir>/stream-clips/``.
+    """
+
+    def __init__(
+        self,
+        events: Optional[dict[str, EventDef]] = None,
+        *,
+        kit_dir: Optional[Union[str, Path]] = None,
+    ) -> None:
         self._events: dict[str, EventDef] = dict(events or {})
+        self.kit_dir: Optional[Path] = Path(kit_dir) if kit_dir else None
 
     # ── Construction ────────────────────────────────────────────────
     @classmethod
     def from_dict(cls, gains: dict[str, float]) -> "EventMap":
-        """Build from a simple ``{event_id: gain}`` mapping."""
+        """Build from a simple ``{event_id: gain}`` mapping (all command mode)."""
         return cls({k: EventDef(event_id=k, intensity=float(v)) for k, v in gains.items()})
 
     @classmethod
-    def from_manifest(cls, manifest: Union[str, Path, dict]) -> "EventMap":
+    def from_manifest(
+        cls,
+        manifest: Union[str, Path, dict],
+        *,
+        kit_dir: Optional[Union[str, Path]] = None,
+    ) -> "EventMap":
         """Build from a kit manifest (path, JSON string, or parsed dict).
 
-        Reads schema 2.0.0 ``events`` (command) and ``stream_events`` buckets.
+        Reads schema 2.0.0 ``events`` (command) and ``stream_events`` (clip)
+        buckets. When ``manifest`` is a file path and ``kit_dir`` is not given,
+        the manifest's parent folder becomes the kit dir (so clip WAVs resolve).
         """
+        src_dir: Optional[Path] = Path(kit_dir) if kit_dir else None
         if isinstance(manifest, (str, Path)) and not _looks_like_json(manifest):
-            manifest = json.loads(Path(manifest).read_text(encoding="utf-8"))
+            path = Path(manifest)
+            if src_dir is None:
+                src_dir = path.parent
+            manifest = json.loads(path.read_text(encoding="utf-8"))
         elif isinstance(manifest, str):
             manifest = json.loads(manifest)
 
         events: dict[str, EventDef] = {}
+        # events first, then stream_events: for an id authored in BOTH buckets
+        # (Studio "BOTH" mode) the clip variant wins, matching the web SDK.
         for bucket, streaming in (("events", False), ("stream_events", True)):
             for event_id, entry in (manifest.get(bucket) or {}).items():
-                params = (entry or {}).get("parameters") or {}
+                entry = entry or {}
+                params = entry.get("parameters") or {}
                 events[event_id] = EventDef(
                     event_id=event_id,
                     intensity=float(params.get("intensity", 1.0)),
                     loop=bool(params.get("loop", False)),
                     device_wiper=params.get("device_wiper"),
                     streaming=streaming,
-                    note=(entry or {}).get("note", ""),
+                    clip=entry.get("clip", ""),
+                    note=entry.get("note", ""),
                 )
-        return cls(events)
+        return cls(events, kit_dir=src_dir)
+
+    @classmethod
+    def from_kit(cls, kit_dir: Union[str, Path]) -> "EventMap":
+        """Build from a kit folder, discovering ``*-manifest.json`` inside it.
+
+        The recommended project layout is::
+
+            kits/<kit-name>/
+                <kit-name>-manifest.json
+                install-clips/   (command clips, deployed to the device)
+                stream-clips/    (clip-mode WAVs the SDK streams)
+        """
+        d = Path(kit_dir)
+        candidates = sorted(d.glob("*-manifest.json")) or sorted(d.glob("manifest.json"))
+        if not candidates:
+            raise FileNotFoundError(f"no *-manifest.json found in kit folder {d}")
+        return cls.from_manifest(candidates[0], kit_dir=d)
 
     # ── Lookup ──────────────────────────────────────────────────────
     def gain_for(self, event_id: str) -> float:

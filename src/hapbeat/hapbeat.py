@@ -23,14 +23,20 @@ or as a context manager::
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Union
 
 from . import protocol
 from .client import DEFAULT_BROADCAST, DEFAULT_PORT, UdpClient
-from .eventmap import EventMap
+from .clip import ClipStreamer
+from .eventmap import EventDef, EventMap
+from .wav import WavPcm, read_wav_pcm16
+
+logger = logging.getLogger("hapbeat")
 
 
 @dataclass
@@ -64,6 +70,8 @@ class Hapbeat:
         keepalive: bool = True,
         keepalive_interval: float = 5.0,
         bind_port: int = 0,
+        clip_base: Optional[Union[str, Path]] = None,
+        stream_send_ahead: float = 0.15,
     ) -> None:
         self._client = UdpClient(port=port, broadcast_addr=broadcast_addr,
                                  bind_port=bind_port)
@@ -72,6 +80,9 @@ class Hapbeat:
         self.group = group
         self.default_target = default_target
         self.event_map = event_map
+        # Where clip-mode WAVs live. If unset, they resolve under the bound
+        # EventMap's kit_dir (kit_dir/stream-clips/<clip>).
+        self.clip_base: Optional[Path] = Path(clip_base) if clip_base else None
         self._seq = 0
         self._seq_lock = threading.Lock()
         self._devices: dict[str, Device] = {}
@@ -81,6 +92,10 @@ class Hapbeat:
         self._keepalive_stop: Optional[threading.Event] = None
         self._keepalive_thread: Optional[threading.Thread] = None
         self._opened = False
+        # Clip streaming (level-2). The streamer calls this object's
+        # stream_begin/stream_data/stream_end (StreamSink protocol).
+        self._clip = ClipStreamer(self, send_ahead_sec=stream_send_ahead)
+        self._clip_cache: dict[str, WavPcm] = {}
 
     # ── Lifecycle ───────────────────────────────────────────────────
     def open(self) -> "Hapbeat":
@@ -99,6 +114,7 @@ class Hapbeat:
         if not self._opened:
             return
         self._opened = False
+        self._clip.stop()  # end any in-flight clip stream
         # Tell the device this app is leaving so the OLED clears.
         if self.app_name:
             try:
@@ -133,16 +149,26 @@ class Hapbeat:
         target: Optional[str] = None,
         target_time_us: int = 0,
     ) -> bool:
-        """Play a haptic event by id.
+        """Play a haptic event by id. The EventMap decides the mode.
 
-        ``event_id`` must exist in the kit deployed to the device.
-        ``gain`` is the absolute wire gain (0..1). When omitted, the bound
-        :class:`EventMap` supplies the per-event default (its manifest
-        ``intensity``); without an EventMap the default is ``1.0``.
+        - **command** event (manifest ``events``) → a PLAY instruction; the
+          device plays its installed clip.
+        - **clip** event (manifest ``stream_events``) → the SDK streams the
+          event's WAV from the kit's ``stream-clips/`` over UDP.
+
+        Either way the caller writes the same one-liner. ``gain`` is the wire
+        gain (0..1); when omitted, the bound :class:`EventMap` supplies the
+        per-event default (its manifest ``intensity``), else ``1.0``.
+        ``target_time_us`` applies to command mode only.
         """
+        ev = self.event_map.get(event_id) if self.event_map else None
         if gain is None:
-            gain = self.event_map.gain_for(event_id) if self.event_map else 1.0
+            gain = ev.intensity if ev is not None else 1.0
         gain = max(0.0, min(1.0, float(gain)))
+
+        if ev is not None and ev.streaming:
+            return self.play_clip(event_id, gain, target=target)
+
         pkt = protocol.build_play(
             self._next_seq(),
             event_id,
@@ -153,14 +179,20 @@ class Hapbeat:
         return self._client.send(pkt)
 
     def stop(self, event_id: str, *, target: Optional[str] = None) -> bool:
-        """Stop one event id on matching devices."""
+        """Stop one event id. Clip events end the active stream; command
+        events send a STOP."""
+        ev = self.event_map.get(event_id) if self.event_map else None
+        if ev is not None and ev.streaming:
+            self._clip.stop()
+            return True
         pkt = protocol.build_stop(
             self._next_seq(), event_id, target=self._resolve_target(target)
         )
         return self._client.send(pkt)
 
     def stop_all(self, *, target: Optional[str] = None) -> bool:
-        """Stop every event on matching devices."""
+        """Stop every event on matching devices (and any active clip stream)."""
+        self._clip.stop()
         pkt = protocol.build_stop_all(
             self._next_seq(), target=self._resolve_target(target)
         )
@@ -180,6 +212,132 @@ class Hapbeat:
             device_name=self.device_name,
         )
         return self._client.send(pkt)
+
+    # ── Clip streaming (level-2) ─────────────────────────────────────
+    def play_clip(
+        self,
+        event_id: str,
+        gain: Optional[float] = None,
+        *,
+        target: Optional[str] = None,
+    ) -> bool:
+        """Stream a clip-mode event's WAV to the device.
+
+        Usually you call :meth:`play`, which routes clip events here. The WAV
+        is read once and cached. Returns ``False`` if the clip can't be found.
+        """
+        ev = self.event_map.get(event_id) if self.event_map else None
+        if ev is None or not ev.clip:
+            logger.warning("clip event %r has no clip file", event_id)
+            return False
+        if gain is None:
+            gain = ev.intensity
+        wav = self._load_clip(event_id, ev)
+        if wav is None:
+            return False
+        self._clip.play(
+            wav.data,
+            sample_rate=wav.sample_rate,
+            channels=wav.channels,
+            gain=max(0.0, min(1.0, float(gain))),
+            target=self._resolve_target(target),
+        )
+        return True
+
+    def play_clip_file(
+        self,
+        path: Union[str, Path],
+        gain: float = 1.0,
+        *,
+        target: Optional[str] = None,
+    ) -> bool:
+        """Stream an arbitrary PCM16 WAV file (not from a manifest)."""
+        try:
+            wav = read_wav_pcm16(path)
+        except (OSError, ValueError) as exc:
+            logger.warning("cannot read clip %s: %s", path, exc)
+            return False
+        self._clip.play(
+            wav.data,
+            sample_rate=wav.sample_rate,
+            channels=wav.channels,
+            gain=max(0.0, min(1.0, float(gain))),
+            target=self._resolve_target(target),
+        )
+        return True
+
+    def stream_pcm(
+        self,
+        pcm: bytes,
+        *,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        gain: float = 1.0,
+        target: Optional[str] = None,
+    ) -> None:
+        """Stream an ad-hoc PCM16 buffer (e.g. synthesized cues). ``channels=2``
+        with per-channel amplitude conveys L/R balance (PLAY has no pan)."""
+        self._clip.play(
+            pcm,
+            sample_rate=sample_rate,
+            channels=max(1, channels),
+            gain=max(0.0, min(1.0, float(gain))),
+            target=self._resolve_target(target),
+        )
+
+    def preload_clips(self) -> None:
+        """Decode every clip-mode event's WAV up front so the first play of
+        each has no load latency."""
+        if self.event_map is None:
+            return
+        for event_id in self.event_map.ids():
+            ev = self.event_map.get(event_id)
+            if ev is not None and ev.streaming and ev.clip:
+                self._load_clip(event_id, ev)
+
+    def _resolve_clip_path(self, ev: EventDef) -> Optional[Path]:
+        if not ev.clip:
+            return None
+        if self.clip_base is not None:
+            return self.clip_base / ev.clip
+        if self.event_map is not None and self.event_map.kit_dir is not None:
+            return self.event_map.kit_dir / "stream-clips" / ev.clip
+        logger.warning(
+            "cannot resolve clip %r: no clip_base and EventMap has no kit_dir "
+            "(load the EventMap with from_kit/from_manifest path, or pass clip_base)",
+            ev.clip,
+        )
+        return None
+
+    def _load_clip(self, event_id: str, ev: EventDef) -> Optional[WavPcm]:
+        cached = self._clip_cache.get(event_id)
+        if cached is not None:
+            return cached
+        path = self._resolve_clip_path(ev)
+        if path is None:
+            return None
+        try:
+            wav = read_wav_pcm16(path)
+        except (OSError, ValueError) as exc:
+            logger.warning("failed to load clip %s: %s", path, exc)
+            return None
+        self._clip_cache[event_id] = wav
+        return wav
+
+    # ── StreamSink (called by ClipStreamer) ─────────────────────────
+    def stream_begin(self, *, sample_rate: int, channels: int,
+                     total_samples: int, gain: float, target: str) -> None:
+        self._client.send(protocol.build_stream_begin(
+            self._next_seq(), sample_rate=sample_rate, channels=channels,
+            fmt=protocol.AUDIO_FORMAT_PCM16, total_samples=total_samples,
+            gain=gain, target=target,
+        ))
+
+    def stream_data(self, offset: int, data: bytes) -> None:
+        self._client.send(protocol.build_stream_data(self._next_seq(), offset, data))
+
+    def stream_end(self) -> None:
+        self._client.send(protocol.build_stream_end(self._next_seq()))
 
     # ── Discovery ───────────────────────────────────────────────────
     def discover(self, timeout: float = 1.0) -> list[Device]:
@@ -238,6 +396,9 @@ def connect(
     event_map: Optional[EventMap] = None,
     keepalive: bool = True,
     bind_port: int = 0,
+    kit: Optional[Union[str, Path]] = None,
+    clip_base: Optional[Union[str, Path]] = None,
+    stream_send_ahead: float = 0.15,
 ) -> Hapbeat:
     """Open a connection and return a ready :class:`Hapbeat`.
 
@@ -246,7 +407,14 @@ def connect(
     hapbeat-helper, which owns the well-known UDP 7700 for Hapbeat Studio.
     Pass ``bind_port=port`` only if you need the device's unsolicited
     broadcasts (normally a daemon's job).
+
+    ``kit`` is a shortcut: pass a kit folder path and the EventMap is loaded
+    from it (``EventMap.from_kit``), so command/clip events and clip WAV paths
+    all resolve from one place. ``clip_base`` overrides where clip WAVs are
+    read from (default: ``<kit>/stream-clips/``).
     """
+    if kit is not None and event_map is None:
+        event_map = EventMap.from_kit(kit)
     return Hapbeat(
         port=port,
         broadcast_addr=broadcast_addr,
@@ -257,4 +425,6 @@ def connect(
         event_map=event_map,
         keepalive=keepalive,
         bind_port=bind_port,
+        clip_base=clip_base,
+        stream_send_ahead=stream_send_ahead,
     ).open()

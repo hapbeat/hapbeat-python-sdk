@@ -73,6 +73,25 @@ hb.play("impact.hit")                              # broadcast to all
 
 See the addressing spec in `hapbeat-contracts/specs/device-addressing.md`.
 
+## Command vs clip (one call, two modes)
+
+The same `play(id)` branches on the manifest bucket the event came from:
+
+- `events` → **command**: the device plays a clip it already has installed.
+- `stream_events` → **clip**: the SDK reads the WAV from the kit's
+  `stream-clips/` and streams it over UDP.
+
+Keep the kit inside your project and load it with `connect(kit=...)`:
+
+```python
+hb = hapbeat.connect(app_name="MyApp", kit="kits/my-kit")
+hb.play("impact.hit")   # command
+hb.play("rain.loop")    # clip (streamed); hb.stop("rain.loop") ends it
+```
+
+Author clips as 16 kHz mono PCM16. Full example:
+[examples/clip_project](https://github.com/hapbeat/hapbeat-python-sdk/tree/master/examples/clip_project).
+
 ## Next steps
 
 - [Examples](https://github.com/hapbeat/hapbeat-python-sdk/tree/master/examples) —

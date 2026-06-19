@@ -12,6 +12,7 @@ dependencies beyond the SDK itself -- copy it out and make it yours.
 | Sample | For | Highlights | Kit needs | Default event |
 |---|---|---|---|---|
 | [minimal.py](minimal.py) | everyone | the smallest possible script: discover, play, stop | 1 short one-shot | `impact.hit` |
+| [clip_project/](clip_project/) | app authors | **project layout**: kit-in-project, `play(id)` auto-branches command vs clip (streamed WAV), plus an ad-hoc `stream_pcm` cue | a kit folder | n/a |
 | [psychophysics_experiment.py](psychophysics_experiment.py) | researchers | detection experiment: constant stimuli or adaptive staircase, catch trials, RT, CSV + reproducibility sidecar | 1 short one-shot | `impact.hit` |
 | [breathing_pacer.py](breathing_pacer.py) | wellbeing / biofeedback | guided breathing: gain-ramped ticks, inhale markers, pattern morphing, tick log for ECG/PPG sync | 1 short, soft one-shot | `tick` |
 | [metronome.py](metronome.py) | musicians / runners | silent metronome: live tempo keys + tap tempo, odd meters (2+2+3), gap training, ramps, count-in | 1 short one-shot | `tick` |

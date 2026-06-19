@@ -156,18 +156,22 @@ def build_connect_status(
     return build_packet(CMD_CONNECT_STATUS, seq, payload)
 
 
-# ── Streaming builders (here for L2; not needed for level-1 fire) ────
+# ── Streaming builders (clip-mode playback) ─────────────────────────
 def build_stream_begin(
     seq: int,
     *,
     sample_rate: int = 16000,
     channels: int = 1,
-    fmt: int = AUDIO_FORMAT_IMA_ADPCM,
+    fmt: int = AUDIO_FORMAT_PCM16,
     total_samples: int = 0,
     gain: float = 1.0,
     target: str = "",
 ) -> bytes:
-    """STREAM_BEGIN (0x30)."""
+    """STREAM_BEGIN (0x30).
+
+    Default format is PCM16 — clip streaming sends uncompressed 16-bit PCM
+    (ADPCM is reserved but not produced by the SDK).
+    """
     payload = struct.pack(
         "<HBBIf", sample_rate, channels, fmt, total_samples, float(gain)
     )

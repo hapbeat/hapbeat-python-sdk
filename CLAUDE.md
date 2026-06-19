@@ -17,7 +17,9 @@ contracts の Layer 1 UDP/OSC 仕様の上に薄く載る code SDK。Unity SDK �
 - Layer 1 protocol の Python 実装（`protocol.py` — contracts/message-format.md の wire 仕様に byte 単位で追従）
 - Wi-Fi UDP 直接通信（broadcast）+ デバイス検出（PING/PONG）
 - `play / stop / stop_all / ping / connect_status` の fire API（`hapbeat.py`）
-- `EventMap`（kit manifest schema 2.0.0 から default gain 解決 = 調整側）
+- `EventMap`（kit manifest schema 2.0.0 から default gain 解決 = 調整側。`events`=command / `stream_events`=clip）
+- **clip 機能**（level-2）: `events`=command（device 内蔵 clip 再生）/ `stream_events`=clip（kit の `stream-clips/` の WAV を `wav.py` で読み `clip.py` の `ClipStreamer` が UDP ストリーム）。`play(id)` が manifest で command/clip を自動分岐。device リング 256ms に合わせ real-time ペーシング（web SDK の `clip.ts` と同型）
+- `EventMap.from_kit(dir)` + プロジェクト規約 `kits/<kit>/{<kit>-manifest.json, install-clips/, stream-clips/}`
 - 汎用 OSC bridge（`/hapbeat/*` を中継、`osc.py`、optional dep python-osc）
 - `hapbeat` CLI
 
@@ -58,7 +60,7 @@ contracts の Layer 1 UDP/OSC 仕様の上に薄く載る code SDK。Unity SDK �
 ## まだ作らないもの（level-2 以降）
 
 - 高レベル trigger 抽象（衝突/状態/連続値 → 自動 fire）。Unity の CollisionTrigger 等に相当
-- streaming clip 再生のリアルタイム gain/pan binding
+- streaming clip の **リアルタイム gain/pan binding** と **多ソース ミキシング**（Unity の HapbeatStreamPlayback/MixerCoroutine 相当）。※ファイルベースの clip ストリーミング（`stream_events` の WAV を session 単位で UDP 送出）は実装済み
 - mDNS（zeroconf）検出（現状は broadcast PING のみ）
 
 ## 設計メモ

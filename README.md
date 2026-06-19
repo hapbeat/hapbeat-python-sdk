@@ -82,6 +82,46 @@ hb.play("impact.hit")        # uses the kit manifest's intensity for this event
 `EventMap` reads the kit manifest (schema 2.0.0) `intensity` as the baseline
 gain. You can also build one by hand: `EventMap.from_dict({"impact.hit": 0.5})`.
 
+## Two playback modes: command and clip
+
+Like the Unity and web SDKs, the same `play(id)` call branches on the manifest:
+
+| Manifest bucket | Mode | What happens |
+|---|---|---|
+| `events` | **command** | the SDK sends a PLAY; the **device** plays its installed clip |
+| `stream_events` | **clip** | the SDK reads the WAV from the kit's `stream-clips/` and **streams** it over UDP |
+
+Put the kit inside your project and call events by id — the per-event details
+(intensity, loop, command vs clip, which WAV) live in the kit, not your code:
+
+```
+my-app/
+  app.py
+  kits/my-kit/
+    my-kit-manifest.json     # the "haptic file" -> EventMap
+    install-clips/           # command clips (flashed to the device via Studio)
+    stream-clips/*.wav       # clip-mode WAVs the SDK streams
+```
+
+```python
+import hapbeat
+hb = hapbeat.connect(app_name="MyApp", kit="kits/my-kit")
+hb.play("impact.hit")     # command -> device plays its installed clip
+hb.play("rain.loop")      # clip    -> SDK streams stream-clips/<wav> over UDP
+hb.stop("rain.loop")      # ends the active stream
+```
+
+You can also stream an ad-hoc PCM16 buffer (e.g. a synthesized stereo cue where
+L/R amplitude conveys direction):
+
+```python
+hb.stream_pcm(pcm_bytes, sample_rate=16000, channels=2)
+```
+
+Author clips as **16 kHz mono PCM16** (the device plays at 16 kHz; the SDK does
+not resample). A full runnable example is in
+[examples/clip_project/](examples/clip_project/).
+
 ## Generic OSC bridge
 
 Any OSC tool (TouchOSC, Max/MSP, TouchDesigner, a DAW) can drive Hapbeat
