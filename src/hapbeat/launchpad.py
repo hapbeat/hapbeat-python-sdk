@@ -311,7 +311,10 @@ def build_server(app: App, host: str, port: int) -> ThreadingHTTPServer:
 def serve(host: str = "127.0.0.1", port: int = 7100, *,
           udp_port: int = 7700, target: str = "",
           open_browser: bool = True) -> int:
-    hb = connect(port=udp_port, app_name="Launchpad", default_target=target)
+    # bind_port=0: receive on an ephemeral port and leave UDP 7700 to
+    # hapbeat-helper, so the launchpad and Hapbeat Studio can run together.
+    hb = connect(port=udp_port, app_name="Launchpad", default_target=target,
+                 bind_port=0)
     app = App(hb)
     server = build_server(app, host, port)
     url = f"http://{host}:{server.server_address[1]}/"
@@ -401,6 +404,20 @@ PAGE = r"""<!doctype html>
   button.ghost { background: var(--panel2); color: var(--text); border-color: var(--line); }
   button.stop { background: linear-gradient(180deg, #ff6a60, var(--danger)); }
   button.run.active { background: linear-gradient(180deg, #ffb648, var(--warn)); }
+  .cmd {
+    display: flex; align-items: center; gap: 8px; margin-top: 2px;
+    background: #0a0d12; border: 1px solid var(--line); border-radius: 9px;
+    padding: 7px 9px;
+  }
+  .cmd code {
+    flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap;
+    font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #9fb0c3;
+  }
+  .cmd .copy {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--line);
+    border-radius: 7px; padding: 4px 9px; font-size: 12px; font-weight: 500;
+    flex: none;
+  }
   .stopall { margin-left: auto; }
   .pill {
     display: inline-flex; align-items: center; gap: 8px; font-size: 13px;
@@ -425,7 +442,8 @@ PAGE = r"""<!doctype html>
 <header>
   <h1><span class="dot">Hapbeat</span> Launchpad</h1>
   <p>One page to try the SDK. Buttons hit a local Python server that drives the
-     device over Wi-Fi UDP.</p>
+     device over Wi-Fi UDP. Each card shows the equivalent terminal command --
+     the button runs exactly that, so you can copy it and run it in a shell.</p>
 </header>
 <main>
   <div class="bar">
@@ -457,6 +475,8 @@ PAGE = r"""<!doctype html>
                  oninput="play_gain_v.textContent=(+this.value).toFixed(2)"></div>
       </div>
       <button onclick="play()">Play</button>
+      <div class="cmd"><code id="play_cmd"></code>
+        <button class="copy" onclick="copyCmd('play_cmd')">copy</button></div>
     </div>
 
     <!-- Metronome -->
@@ -472,6 +492,8 @@ PAGE = r"""<!doctype html>
       <div class="field"><label>Event id</label>
         <input id="met_event" class="mono" placeholder="(default)"></div>
       <button id="met_btn" class="run" onclick="toggle('metronome','met_btn',metParams)">Start</button>
+      <div class="cmd"><code id="met_cmd"></code>
+        <button class="copy" onclick="copyCmd('met_cmd')">copy</button></div>
     </div>
 
     <!-- Breathing -->
@@ -491,6 +513,8 @@ PAGE = r"""<!doctype html>
       <div class="field"><label>Event id</label>
         <input id="brk_event" class="mono" placeholder="(default)"></div>
       <button id="brk_btn" class="run" onclick="toggle('breathing','brk_btn',brkParams)">Start</button>
+      <div class="cmd"><code id="brk_cmd"></code>
+        <button class="copy" onclick="copyCmd('brk_cmd')">copy</button></div>
     </div>
 
     <!-- Morse -->
@@ -506,6 +530,8 @@ PAGE = r"""<!doctype html>
       <div class="field"><label>Event id</label>
         <input id="mor_event" class="mono" placeholder="(default)"></div>
       <button id="mor_btn" class="run" onclick="toggle('morse','mor_btn',morParams)">Send</button>
+      <div class="cmd"><code id="mor_cmd"></code>
+        <button class="copy" onclick="copyCmd('mor_cmd')">copy</button></div>
     </div>
   </div>
 
@@ -572,7 +598,31 @@ function brkParams(){ const p=$('brk_pattern').value.split(',').map(Number);
 function morParams(){ return {event: evOr('mor_event'), text:$('mor_text').value,
   wpm:+$('mor_wpm').value, target: target()}; }
 
-function applyPreset(){ $('brk_pattern').value = $('brk_preset').value; }
+function applyPreset(){ $('brk_pattern').value = $('brk_preset').value; renderCmds(); }
+
+// The equivalent terminal command per card -- exactly what the button runs.
+function evShow(id){ return evOr(id) || '<event>'; }
+function tgt(){ const t = target(); return t ? ' --target ' + t : ''; }
+function renderCmds(){
+  $('play_cmd').textContent =
+    'hapbeat play ' + evShow('play_event') +
+    ' --gain ' + (+$('play_gain').value).toFixed(2) + tgt();
+  $('met_cmd').textContent =
+    'python examples/metronome.py --event ' + evShow('met_event') +
+    ' --bpm ' + (+$('met_bpm').value) + ' --beats ' + (+$('met_beats').value) + tgt();
+  $('brk_cmd').textContent =
+    'python examples/breathing_pacer.py --event ' + evShow('brk_event') +
+    ' --pattern ' + ($('brk_pattern').value || '4,4,4,4') + tgt();
+  $('mor_cmd').textContent =
+    'python examples/morse_text.py "' + ($('mor_text').value || 'TEXT') +
+    '" --event ' + evShow('mor_event') + ' --wpm ' + (+$('mor_wpm').value) + tgt();
+}
+async function copyCmd(id){
+  try { await navigator.clipboard.writeText($(id).textContent);
+        log('copied: ' + $(id).textContent, 'ok'); }
+  catch(e){ log('copy failed -- select the command text manually', 'err'); }
+}
+document.addEventListener('input', renderCmds);
 function setStart(id){ const b=$(id); b.classList.remove('active');
   b.textContent = id==='mor_btn' ? 'Send' : 'Start'; }
 function setStop(id){ const b=$(id); b.classList.add('active'); b.textContent='Stop'; }
@@ -601,6 +651,7 @@ async function poll(){
   } catch(e){}
 }
 setInterval(poll, 1500);
+renderCmds();
 scan();
 </script>
 </body>

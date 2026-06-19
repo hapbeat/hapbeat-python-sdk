@@ -15,6 +15,7 @@ import urllib.request
 import pytest
 
 from hapbeat import launchpad
+from hapbeat.client import UdpClient
 
 
 class FakeHapbeat:
@@ -42,6 +43,28 @@ def test_page_is_ascii_and_complete():
     data = launchpad.PAGE.encode("utf-8")
     assert all(b < 128 for b in data), "launchpad page must be ASCII"
     assert "<html" in launchpad.PAGE and "/api/play" in launchpad.PAGE
+    # Each card advertises its equivalent terminal command.
+    for cid in ("play_cmd", "met_cmd", "brk_cmd", "mor_cmd"):
+        assert f'id="{cid}"' in launchpad.PAGE
+    assert "hapbeat play" in launchpad.PAGE
+    assert "examples/metronome.py" in launchpad.PAGE
+
+
+def test_bind_port_ephemeral_leaves_well_known_free():
+    # The launchpad passes bind_port=0 so it never grabs UDP 7700 (which
+    # hapbeat-helper owns for Studio). Verify the socket binds elsewhere and
+    # still sends to the destination port.
+    c = UdpClient(port=7700, bind_port=0)
+    c.open()
+    try:
+        bound = c._sock.getsockname()[1]
+        assert bound != 0
+        assert bound != 7700
+        assert c.port == 7700  # destination unchanged
+        assert c._bound_well_known is False
+        assert c.send(b"HB\x01\x10\x00\x00\x00\x00") is True
+    finally:
+        c.close()
 
 
 def test_num_coerces_and_clamps():

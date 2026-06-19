@@ -63,8 +63,10 @@ class Hapbeat:
         event_map: Optional[EventMap] = None,
         keepalive: bool = True,
         keepalive_interval: float = 5.0,
+        bind_port: Optional[int] = None,
     ) -> None:
-        self._client = UdpClient(port=port, broadcast_addr=broadcast_addr)
+        self._client = UdpClient(port=port, broadcast_addr=broadcast_addr,
+                                 bind_port=bind_port)
         self.app_name = app_name[: protocol.MAX_APP_NAME_LEN]
         self.device_name = device_name
         self.group = group
@@ -235,10 +237,13 @@ def connect(
     default_target: str = "",
     event_map: Optional[EventMap] = None,
     keepalive: bool = True,
+    bind_port: Optional[int] = None,
 ) -> Hapbeat:
     """Open a connection and return a ready :class:`Hapbeat`.
 
-    Equivalent to ``Hapbeat(...).open()``.
+    Equivalent to ``Hapbeat(...).open()``. Pass ``bind_port=0`` to receive on
+    an ephemeral port instead of the well-known ``port``, so the SDK can run
+    alongside hapbeat-helper (which owns UDP 7700 for Hapbeat Studio).
     """
     return Hapbeat(
         port=port,
@@ -249,4 +254,5 @@ def connect(
         default_target=default_target,
         event_map=event_map,
         keepalive=keepalive,
+        bind_port=bind_port,
     ).open()

@@ -38,8 +38,15 @@ class UdpClient:
         self,
         port: int = DEFAULT_PORT,
         broadcast_addr: str = DEFAULT_BROADCAST,
+        bind_port: Optional[int] = None,
     ) -> None:
-        self.port = port
+        self.port = port  # destination port (the device listens here)
+        # Local receive bind. Defaults to the destination port to catch async
+        # broadcast pushes; pass 0 to take an ephemeral port and leave the
+        # well-known 7700 to another owner (e.g. hapbeat-helper running for
+        # Hapbeat Studio) so both can run at once. PING replies still arrive
+        # at the ephemeral source port, so discovery keeps working.
+        self.bind_port = port if bind_port is None else bind_port
         self.broadcast_addr = broadcast_addr
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
@@ -53,24 +60,29 @@ class UdpClient:
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        if self.bind_port == self.port:
+            # Only when contending for the shared well-known port do we ask to
+            # reuse it; an ephemeral bind needs no reuse and must not steal a
+            # port another process owns.
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            except OSError:
+                pass
         try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        except OSError:
-            pass
-        try:
-            sock.bind(("0.0.0.0", self.port))
-            self._bound_well_known = True
+            sock.bind(("0.0.0.0", self.bind_port))
+            self._bound_well_known = self.bind_port == self.port
         except OSError as exc:
             logger.warning(
                 "port %d busy (%s); binding ephemeral port (discovery still "
                 "works, async broadcast pushes are not received)",
-                self.port,
+                self.bind_port,
                 exc,
             )
             try:
                 sock.bind(("0.0.0.0", 0))
             except OSError:
                 pass
+            self._bound_well_known = False
         sock.settimeout(0.2)
         self._sock = sock
         self._running = True
