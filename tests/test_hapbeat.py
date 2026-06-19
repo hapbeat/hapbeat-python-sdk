@@ -18,9 +18,9 @@ from hapbeat import hapbeat as hapbeat_mod
 class FakeUdpClient:
     """Stands in for UdpClient: records listeners/sends, no sockets."""
 
-    def __init__(self, port=7700, broadcast_addr="255.255.255.255", bind_port=None):
+    def __init__(self, port=7700, broadcast_addr="255.255.255.255", bind_port=0):
         self.port = port
-        self.bind_port = port if bind_port is None else bind_port
+        self.bind_port = bind_port  # matches UdpClient: default 0 = ephemeral
         self.broadcast_addr = broadcast_addr
         self.listeners = []
         self.open_calls = 0
