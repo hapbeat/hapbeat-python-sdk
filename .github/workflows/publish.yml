@@ -1,7 +1,8 @@
 name: Publish to PyPI
 
-# Publishes the `hapbeat` package via GitHub Actions OIDC (Trusted Publishing,
-# no token stored in the repo). Mirrors hapbeat-helper's proven setup.
+# Publishes the `hapbeat-python-sdk` package via GitHub Actions OIDC (Trusted
+# Publishing, no token stored in the repo). Mirrors hapbeat-helper's setup.
+# (Distribution name is hapbeat-python-sdk; the import package stays `hapbeat`.)
 #
 # Triggers:
 #   - tag push vX.Y.Z          -> production PyPI
@@ -10,7 +11,7 @@ name: Publish to PyPI
 #
 # One-time PyPI setup (do once, BEFORE the first tag):
 #   1. https://pypi.org/manage/account/publishing/  -> "Add a pending publisher"
-#        PyPI Project Name: hapbeat
+#        PyPI Project Name: hapbeat-python-sdk
 #        Owner:             hapbeat
 #        Repository name:   hapbeat-python-sdk
 #        Workflow filename: publish.yml
@@ -65,7 +66,7 @@ jobs:
       (github.event_name == 'push' && contains(github.ref, '-'))
     environment:
       name: testpypi
-      url: https://test.pypi.org/p/hapbeat
+      url: https://test.pypi.org/p/hapbeat-python-sdk
     permissions:
       id-token: write
     steps:
@@ -87,7 +88,7 @@ jobs:
       (github.event_name == 'push' && !contains(github.ref, '-'))
     environment:
       name: pypi
-      url: https://pypi.org/p/hapbeat
+      url: https://pypi.org/p/hapbeat-python-sdk
     permissions:
       id-token: write
     steps:
