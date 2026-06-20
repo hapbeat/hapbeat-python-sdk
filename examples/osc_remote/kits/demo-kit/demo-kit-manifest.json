@@ -1,0 +1,23 @@
+{
+  "schema_version": "2.0.0",
+  "name": "demo-kit",
+  "description": "Example kit for the Python SDK clip_project sample.",
+  "version": "1.0.0",
+  "target_device": {
+    "firmware_version_min": "0.1.0"
+  },
+  "events": {
+    "demo.tap": {
+      "clip": "tap.wav",
+      "description": "Short tap (command mode: device plays its installed clip)",
+      "parameters": { "intensity": 0.8, "loop": false }
+    }
+  },
+  "stream_events": {
+    "demo.rumble": {
+      "clip": "rumble.wav",
+      "description": "Decaying low rumble (clip mode: the SDK streams this WAV)",
+      "parameters": { "intensity": 0.6, "loop": false }
+    }
+  }
+}

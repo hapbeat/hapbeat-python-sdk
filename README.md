@@ -6,10 +6,9 @@ prototyping haptics in Python.
 
 > **📚 Docs**: <https://devtools.hapbeat.com/docs/sdk-integration/>
 
-This is the **level-1** SDK: a script can drive Hapbeat with a few lines. The
-fire side (`play` / `stop`) and the tuning side (`EventMap`) are kept
-orthogonal and linked only by event id — the same design as the Hapbeat Unity
-SDK.
+A script can drive Hapbeat with a few lines. The fire side (`play` / `stop`)
+and the tuning side (`EventMap`) are kept orthogonal and linked only by
+event id.
 
 ## Install
 
@@ -17,9 +16,6 @@ SDK.
 pip install hapbeat-python-sdk        # core (zero dependencies, stdlib socket only)
 pip install "hapbeat-python-sdk[osc]"   # + generic OSC bridge (TouchOSC / Max / TD)
 ```
-
-> PyPI publish is pending; until then install from source:
-> `pip install -e .` inside a clone, or `pip install git+https://github.com/hapbeat/hapbeat-python-sdk.git`.
 
 With **pipx** you get the `hapbeat` CLI (including the launchpad below) in an
 isolated environment: `pipx install hapbeat-python-sdk`. Note that pipx does *not* make
@@ -87,8 +83,7 @@ gain. You can also build one by hand: `EventMap.from_dict({"impact.hit": 0.5})`.
 The Studio-generated manifest holds kit content (intensity / clip), but not
 app-side concerns like **which device/body part** an event goes to. Put those
 in a *haptic file* (an EventMap overlay that references the kit), so `play(id)`
-resolves the target without the caller passing it — the same split as the Unity
-SDK's EventMap asset:
+resolves the target without the caller passing it:
 
 ```json
 // haptics.json
@@ -108,7 +103,7 @@ hb.play("impact.hit")     # goes to player_1/chest at gain 0.8 — from the file
 
 ## Two playback modes: command and clip
 
-Like the Unity and web SDKs, the same `play(id)` call branches on the manifest:
+The same `play(id)` call branches on the manifest:
 
 | Manifest bucket | Mode | What happens |
 |---|---|---|
@@ -172,6 +167,14 @@ Ready-to-run sample applications live in [examples/](examples/):
 a psychophysics experiment, a breathing pacer, a haptic metronome,
 a live trigger pad, a task-completion notifier, and a Morse transmitter.
 Each is a single stdlib-only file — see [examples/README.md](examples/README.md).
+
+## For AI coding agents
+
+Working with Claude / Cursor / Copilot? Hand your agent [AGENTS.md](AGENTS.md) —
+a single self-contained file with the SDK's model, API, project layout, and
+pitfalls. One file is enough to get the whole picture.
+
+> Use the Hapbeat Python SDK. Read `AGENTS.md` and follow its API and best practices.
 
 ## License
 

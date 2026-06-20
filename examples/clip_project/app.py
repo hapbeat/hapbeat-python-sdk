@@ -28,6 +28,7 @@ Run:
     python examples/clip_project/app.py
 """
 
+import struct
 import time
 from pathlib import Path
 
@@ -66,7 +67,6 @@ def main() -> int:
 
         # Ad-hoc stereo cue (no manifest): per-channel amplitude = L/R balance.
         print("stream an ad-hoc stereo cue (right-biased)")
-        import struct
         sr = 16000
         frames = bytearray()
         for i in range(int(sr * 0.3)):

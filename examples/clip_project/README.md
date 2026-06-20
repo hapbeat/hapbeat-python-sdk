@@ -34,8 +34,10 @@ python examples/clip_project/app.py
 - The **clip** event (`demo.rumble`) works immediately — the SDK streams
   `stream-clips/rumble.wav`.
 - The **command** event (`demo.tap`) needs the kit deployed to the device with
-  [Hapbeat Studio](https://devtools.hapbeat.com) first (the clip must be
-  installed on the device).
+  [Hapbeat Studio](https://devtools.hapbeat.com) first. Note this demo kit ships
+  no `install-clips/tap.wav` (command waveforms are authored in Studio, not by
+  the SDK), so `demo.tap` stays silent until you add/replace its clip in Studio
+  and deploy. The **clip** event works with no deploy.
 
 ## How the caller stays clean
 

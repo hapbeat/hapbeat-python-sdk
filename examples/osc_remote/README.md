@@ -22,13 +22,17 @@ bridge. So you re-aim or re-balance cues by editing one file, never the phone.
 
 ```json
 {
-  "kit": "../clip_project/kits/demo-kit",
+  "kit": "kits/demo-kit",
   "events": {
     "demo.tap":    { "target": "player_1/chest", "gain": 0.8 },
     "demo.rumble": { "target": "*/back",          "gain": 0.6 }
   }
 }
 ```
+
+This folder is self-contained: copy `osc_remote/` anywhere, swap `kits/demo-kit`
+for your own kit, and run. (`gain` 0.8 / `*/back` etc. are placeholders — set
+`target` to match your device, or `""` to broadcast to all for a first test.)
 
 ## Run
 

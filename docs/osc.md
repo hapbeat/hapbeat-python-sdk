@@ -4,10 +4,6 @@ Drive Hapbeat from any OSC-capable tool — **TouchOSC, Max/MSP, TouchDesigner,
 vvvv, DAWs** — without writing code. The bridge listens for OSC and relays it
 to devices over UDP.
 
-This is the *transport* form of OSC (you speak directly to Hapbeat).
-App-specific schemas (e.g. VRChat avatar parameters) are handled by their own
-dedicated bridge that translates into these same calls.
-
 ## Run it
 
 ```bash
@@ -38,8 +34,7 @@ every `/hapbeat/play` is a command broadcast.
 
 ## OSC address map
 
-Defined in `hapbeat-contracts/specs/message-format.md` §6. Trailing arguments
-are optional (sensible defaults are used).
+Trailing arguments are optional (sensible defaults are used).
 
 | Address | Arguments |
 |---|---|
