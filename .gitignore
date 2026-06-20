@@ -25,3 +25,6 @@ Thumbs.db
 # Internal dev notes live in the workspace (private) per 2026-05-10 policy:
 #   hapbeat-sdk-workspace/dev-notes/python-sdk/
 dev-notes/
+CLAUDE.md
+instructions/
+.claude/
