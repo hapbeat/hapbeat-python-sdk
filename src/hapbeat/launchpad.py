@@ -405,12 +405,12 @@ PAGE = r"""<!doctype html>
   button.stop { background: linear-gradient(180deg, #ff6a60, var(--danger)); }
   button.run.active { background: linear-gradient(180deg, #ffb648, var(--warn)); }
   .cmd {
-    display: flex; align-items: center; gap: 8px; margin-top: 2px;
+    display: flex; align-items: flex-start; gap: 8px; margin-top: 2px;
     background: #0a0d12; border: 1px solid var(--line); border-radius: 9px;
     padding: 7px 9px;
   }
   .cmd code {
-    flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap;
+    flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere;
     font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #9fb0c3;
   }
   .cmd .copy {
