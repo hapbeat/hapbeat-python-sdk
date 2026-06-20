@@ -57,11 +57,13 @@ class OscBridge:
         self._server = None
 
     # ── Handlers (defensive about omitted trailing OSC args) ────────
+    # An omitted target is passed as None (not "") so the bound EventMap's
+    # per-event target (haptic file) applies; an explicit OSC target overrides.
     def _handle_play(self, _address: str, *args) -> None:
         event_id = str(args[0]) if len(args) >= 1 else ""
         if not event_id:
             return
-        target = str(args[1]) if len(args) >= 2 else ""
+        target = str(args[1]) if len(args) >= 2 and args[1] != "" else None
         target_time = int(args[2]) if len(args) >= 3 else 0
         gain = float(args[3]) if len(args) >= 4 else None
         self.hb.play(event_id, gain, target=target, target_time_us=target_time)
@@ -69,11 +71,11 @@ class OscBridge:
     def _handle_stop(self, _address: str, *args) -> None:
         if not args:
             return
-        target = str(args[1]) if len(args) >= 2 else ""
+        target = str(args[1]) if len(args) >= 2 and args[1] != "" else None
         self.hb.stop(str(args[0]), target=target)
 
     def _handle_stop_all(self, _address: str, *args) -> None:
-        target = str(args[0]) if args else ""
+        target = str(args[0]) if args and args[0] != "" else None
         self.hb.stop_all(target=target)
 
     def _handle_ping(self, _address: str, *_args) -> None:
@@ -109,9 +111,15 @@ def run_bridge(
     *,
     udp_port: int = 7700,
     app_name: str = "hapbeat-osc",
+    event_map=None,
 ) -> None:
-    """Open a Hapbeat connection and serve the OSC bridge (blocking)."""
-    hb = Hapbeat(port=udp_port, app_name=app_name).open()
+    """Open a Hapbeat connection and serve the OSC bridge (blocking).
+
+    Pass an ``event_map`` (e.g. ``EventMap.from_file("haptics.json")``) so OSC
+    events route command vs clip and pick up per-event targets from the haptic
+    file -- otherwise every ``/hapbeat/play`` is a plain command broadcast.
+    """
+    hb = Hapbeat(port=udp_port, app_name=app_name, event_map=event_map).open()
     try:
         OscBridge(hb, listen_port=listen_port).serve_forever()
     finally:

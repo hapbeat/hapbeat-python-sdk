@@ -20,7 +20,8 @@ contracts の Layer 1 UDP/OSC 仕様の上に薄く載る code SDK。Unity SDK �
 - `EventMap`（kit manifest schema 2.0.0 から default gain 解決 = 調整側。`events`=command / `stream_events`=clip）
 - **clip 機能**（level-2）: `events`=command（device 内蔵 clip 再生）/ `stream_events`=clip（kit の `stream-clips/` の WAV を `wav.py` で読み `clip.py` の `ClipStreamer` が UDP ストリーム）。`play(id)` が manifest で command/clip を自動分岐。device リング 256ms に合わせ real-time ペーシング（web SDK の `clip.ts` と同型）
 - `EventMap.from_kit(dir)` + プロジェクト規約 `kits/<kit>/{<kit>-manifest.json, install-clips/, stream-clips/}`
-- 汎用 OSC bridge（`/hapbeat/*` を中継、`osc.py`、optional dep python-osc）
+- **触覚ファイル（EventMap overlay）**: `EventMap.from_file("haptics.json")` — manifest（Studio 生成・intensity/clip）を参照し、**app 側の per-event 設定（target / gain override）を上乗せ**。`play(id)` が target を解決（Unity の EventMap アセット相当）。`EventDef.target` 追加・`connect(haptics=...)`
+- 汎用 OSC bridge（`/hapbeat/*` を中継、`osc.py`、optional dep python-osc）。`--haptics`/`--kit` で EventMap を載せると OSC からも command/clip 分岐 + per-event target が効く
 - `hapbeat` CLI
 
 ## 管理対象

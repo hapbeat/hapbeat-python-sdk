@@ -12,7 +12,14 @@ dedicated bridge that translates into these same calls.
 
 ```bash
 pip install "hapbeat-python-sdk[osc]"
-hapbeat osc-bridge --listen 7702       # OSC in on 7702, relays to UDP 7700
+
+# plain (command-only, target via OSC arg)
+hapbeat osc-bridge --listen 7702
+
+# with a haptic file: OSC events route command/clip and pick up per-event
+# target + gain, so the sender only needs the event id (recommended)
+hapbeat osc-bridge --listen 7702 --haptics haptics.json
+# or a kit folder (intensity/clip only, no targeting): --kit kits/my-kit
 ```
 
 Or embed it:
@@ -21,9 +28,13 @@ Or embed it:
 import hapbeat
 from hapbeat.osc import OscBridge
 
-hb = hapbeat.connect(app_name="osc")
+hb = hapbeat.connect(app_name="osc", haptics="haptics.json")  # or kit="kits/my-kit"
 OscBridge(hb, listen_port=7702).serve_forever()
 ```
+
+With a haptic file loaded, `/hapbeat/play <id>` (no target) streams clip events
+and routes command events to the target authored in the file. Without one,
+every `/hapbeat/play` is a command broadcast.
 
 ## OSC address map
 
@@ -41,8 +52,18 @@ are optional (sensible defaults are used).
 - `target` — device address; empty string = broadcast (all devices).
 - `gain` — float 0..1.
 
-## Example: TouchOSC
+## Example: TouchOSC as a wireless haptic remote
 
-Add a button that sends `/hapbeat/play` with a string argument `impact.hit`
-and a float `0.5`, to your computer's IP on port `7702`. Run the bridge on
-that computer and the button fires the haptic event.
+A phone running TouchOSC becomes a no-code haptic remote: buttons send
+`/hapbeat/play <event_id>` to your computer's IP on port `7702`, the bridge
+relays to the devices. Great for live performance, exhibitions, and
+Wizard-of-Oz studies. Load a haptic file so each button just names an event
+and the file decides target/strength/clip:
+
+```bash
+hapbeat osc-bridge --listen 7702 --haptics haptics.json
+```
+
+A full runnable example (haptic file + a keyboard sender to test without a
+phone) is in
+[examples/osc_remote/](https://github.com/hapbeat/hapbeat-python-sdk/tree/master/examples/osc_remote).

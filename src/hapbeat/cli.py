@@ -16,6 +16,7 @@ import argparse
 import sys
 
 from . import __version__
+from .eventmap import EventMap
 from .hapbeat import connect
 
 
@@ -50,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_osc = sub.add_parser("osc-bridge", help="relay /hapbeat/* OSC to devices")
     p_osc.add_argument("--listen", type=int, default=7702, help="OSC listen port (default 7702)")
+    p_osc.add_argument("--haptics", default=None,
+                       help="haptic file (overlay) so OSC events route command/clip + use per-event targets")
+    p_osc.add_argument("--kit", default=None,
+                       help="kit folder (alternative to --haptics; intensity/clip only, no targeting)")
     _add_common(p_osc)
 
     p_lp = sub.add_parser(
@@ -70,9 +75,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "osc-bridge":
         from .osc import OscBridge
 
-        hb = connect(port=args.port, app_name="hapbeat-osc")
+        event_map = None
+        if args.haptics:
+            event_map = EventMap.from_file(args.haptics)
+        elif args.kit:
+            event_map = EventMap.from_kit(args.kit)
+        hb = connect(port=args.port, app_name="hapbeat-osc",
+                     default_target=args.target, event_map=event_map)
         try:
-            print(f"OSC bridge: listening on :{args.listen}, relaying to UDP {args.port}")
+            mode = "command+clip" if event_map else "command only"
+            print(f"OSC bridge: listening on :{args.listen}, relaying to UDP {args.port} ({mode})")
             OscBridge(hb, listen_port=args.listen).serve_forever()
         except KeyboardInterrupt:
             pass

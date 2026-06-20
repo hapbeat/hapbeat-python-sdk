@@ -140,6 +140,15 @@ class Hapbeat:
     def _resolve_target(self, target: Optional[str]) -> str:
         return self.default_target if target is None else target
 
+    def _effective_target(self, ev: Optional[EventDef], target: Optional[str]) -> str:
+        """Resolve the wire target: explicit call-site arg > the event's own
+        target (from the haptic file) > the connection default."""
+        if target is not None:
+            return target
+        if ev is not None and ev.target:
+            return ev.target
+        return self.default_target
+
     # ── Fire API (level-1) ──────────────────────────────────────────
     def play(
         self,
@@ -165,14 +174,15 @@ class Hapbeat:
         if gain is None:
             gain = ev.intensity if ev is not None else 1.0
         gain = max(0.0, min(1.0, float(gain)))
+        target_eff = self._effective_target(ev, target)
 
         if ev is not None and ev.streaming:
-            return self.play_clip(event_id, gain, target=target)
+            return self.play_clip(event_id, gain, target=target_eff)
 
         pkt = protocol.build_play(
             self._next_seq(),
             event_id,
-            target=self._resolve_target(target),
+            target=target_eff,
             target_time_us=target_time_us,
             gain=gain,
         )
@@ -186,7 +196,7 @@ class Hapbeat:
             self._clip.stop()
             return True
         pkt = protocol.build_stop(
-            self._next_seq(), event_id, target=self._resolve_target(target)
+            self._next_seq(), event_id, target=self._effective_target(ev, target)
         )
         return self._client.send(pkt)
 
@@ -240,7 +250,7 @@ class Hapbeat:
             sample_rate=wav.sample_rate,
             channels=wav.channels,
             gain=max(0.0, min(1.0, float(gain))),
-            target=self._resolve_target(target),
+            target=self._effective_target(ev, target),
         )
         return True
 
@@ -397,6 +407,7 @@ def connect(
     keepalive: bool = True,
     bind_port: int = 0,
     kit: Optional[Union[str, Path]] = None,
+    haptics: Optional[Union[str, Path]] = None,
     clip_base: Optional[Union[str, Path]] = None,
     stream_send_ahead: float = 0.15,
 ) -> Hapbeat:
@@ -408,13 +419,18 @@ def connect(
     Pass ``bind_port=port`` only if you need the device's unsolicited
     broadcasts (normally a daemon's job).
 
-    ``kit`` is a shortcut: pass a kit folder path and the EventMap is loaded
-    from it (``EventMap.from_kit``), so command/clip events and clip WAV paths
-    all resolve from one place. ``clip_base`` overrides where clip WAVs are
-    read from (default: ``<kit>/stream-clips/``).
+    Loading the EventMap (pick one):
+      - ``haptics`` — a *haptic file* (overlay that references a kit and adds
+        per-event target/gain); ``EventMap.from_file``. Recommended.
+      - ``kit`` — a kit folder; ``EventMap.from_kit`` (intensity/clip only,
+        no targeting).
+    ``clip_base`` overrides where clip WAVs are read (default ``<kit>/stream-clips/``).
     """
-    if kit is not None and event_map is None:
-        event_map = EventMap.from_kit(kit)
+    if event_map is None:
+        if haptics is not None:
+            event_map = EventMap.from_file(haptics)
+        elif kit is not None:
+            event_map = EventMap.from_kit(kit)
     return Hapbeat(
         port=port,
         broadcast_addr=broadcast_addr,

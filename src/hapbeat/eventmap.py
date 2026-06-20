@@ -36,6 +36,7 @@ class EventDef:
     device_wiper: Optional[int] = None
     streaming: bool = False  # True => clip mode (manifest stream_events bucket)
     clip: str = ""           # WAV filename (clip mode), relative to stream-clips/
+    target: str = ""         # device address (overlay/app side); "" = broadcast
     note: str = ""
 
     @property
@@ -122,6 +123,59 @@ class EventMap:
         if not candidates:
             raise FileNotFoundError(f"no *-manifest.json found in kit folder {d}")
         return cls.from_manifest(candidates[0], kit_dir=d)
+
+    @classmethod
+    def from_file(cls, path: Union[str, Path]) -> "EventMap":
+        """Build from a *haptic file* — an authored overlay that references a kit.
+
+        The Studio-generated manifest holds kit content (intensity / clip /
+        mode). App-side, per-event settings that the manifest does NOT carry --
+        targeting, a gain override -- live here, so ``play(id)`` resolves them
+        without the caller passing ``target`` every time. Mirrors the Unity
+        SDK's EventMap asset (which references the kit and adds target/gain).
+
+        File format (JSON)::
+
+            {
+              "kit": "kits/my-kit",          # kit folder, relative to this file
+              "events": {
+                "impact.hit": { "target": "player_1/chest", "gain": 0.8 },
+                "rain.loop":  { "target": "*/back" }
+              }
+            }
+
+        ``kit`` is optional (omit it for a pure target/gain overlay with no
+        clip resolution). Per-event keys: ``target``, ``gain`` (overrides the
+        manifest intensity; ``intensity`` is also accepted), ``loop``, ``note``.
+        """
+        p = Path(path)
+        spec = json.loads(p.read_text(encoding="utf-8"))
+        kit = spec.get("kit")
+        if kit:
+            kit_path = Path(kit)
+            if not kit_path.is_absolute():
+                kit_path = p.parent / kit_path
+            em = cls.from_kit(kit_path)
+        else:
+            em = cls()
+
+        for event_id, raw in (spec.get("events") or {}).items():
+            o = raw or {}
+            ev = em._events.get(event_id)
+            if ev is None:  # overlay-only event (not in the kit): command mode
+                ev = EventDef(event_id=event_id)
+                em._events[event_id] = ev
+            if "target" in o:
+                ev.target = str(o["target"])
+            if "gain" in o:
+                ev.intensity = float(o["gain"])
+            elif "intensity" in o:
+                ev.intensity = float(o["intensity"])
+            if "loop" in o:
+                ev.loop = bool(o["loop"])
+            if "note" in o:
+                ev.note = str(o["note"])
+        return em
 
     # ── Lookup ──────────────────────────────────────────────────────
     def gain_for(self, event_id: str) -> float:

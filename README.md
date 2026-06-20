@@ -82,6 +82,30 @@ hb.play("impact.hit")        # uses the kit manifest's intensity for this event
 `EventMap` reads the kit manifest (schema 2.0.0) `intensity` as the baseline
 gain. You can also build one by hand: `EventMap.from_dict({"impact.hit": 0.5})`.
 
+### Haptic file — add targeting on top of the kit
+
+The Studio-generated manifest holds kit content (intensity / clip), but not
+app-side concerns like **which device/body part** an event goes to. Put those
+in a *haptic file* (an EventMap overlay that references the kit), so `play(id)`
+resolves the target without the caller passing it — the same split as the Unity
+SDK's EventMap asset:
+
+```json
+// haptics.json
+{
+  "kit": "kits/my-kit",
+  "events": {
+    "impact.hit": { "target": "player_1/chest", "gain": 0.8 },
+    "rain.loop":  { "target": "*/back" }
+  }
+}
+```
+
+```python
+hb = hapbeat.connect(app_name="MyApp", haptics="haptics.json")
+hb.play("impact.hit")     # goes to player_1/chest at gain 0.8 — from the file
+```
+
 ## Two playback modes: command and clip
 
 Like the Unity and web SDKs, the same `play(id)` call branches on the manifest:
