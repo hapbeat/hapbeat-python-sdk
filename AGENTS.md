@@ -195,3 +195,11 @@ PING/PONG only.
 `examples/` are single-file/folder templates. Start with `minimal.py`, then
 `clip_project/` (project layout + command/clip), then `osc_remote/` (haptic file
 + OSC). See `examples/README.md`.
+
+## More detail
+
+When this single file is not enough, an agent can fetch:
+
+- **Complete reference in one text file (recommended next step):** https://devtools.hapbeat.com/_llms-txt/python-sdk.txt
+- **Concepts** (shared by every SDK): event id <-> kit https://devtools.hapbeat.com/docs/concepts/event-id-and-kit/ - command vs clip https://devtools.hapbeat.com/docs/concepts/fire-vs-clip/ - targeting https://devtools.hapbeat.com/docs/concepts/group-player-addressing/
+- Human docs: https://devtools.hapbeat.com/docs/sdk-integration/python-sdk/ - Portal: https://devtools.hapbeat.com/
