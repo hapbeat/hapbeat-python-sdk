@@ -11,14 +11,14 @@ dependencies beyond the SDK itself -- copy it out and make it yours.
 
 | Sample | For | Highlights | Kit needs | Default event |
 |---|---|---|---|---|
-| [minimal.py](minimal.py) | everyone | the smallest possible script: discover, play, stop | 1 short one-shot | `impact.hit` |
+| [minimal.py](minimal.py) | everyone | the smallest possible script: discover, play, stop | 1 short one-shot | `sample-kit.sine_100hz` |
 | [clip_project/](clip_project/) | app authors | **project layout**: kit-in-project, `play(id)` auto-branches command vs clip (streamed WAV), plus an ad-hoc `stream_pcm` cue | a kit folder | n/a |
 | [osc_remote/](osc_remote/) | live / exhibitions | **OSC bridge**: phone (TouchOSC) as a wireless haptic remote; a *haptic file* gives each event a target; sender demo to test without a phone | a kit + haptic file | n/a |
-| [psychophysics_experiment.py](psychophysics_experiment.py) | researchers | detection experiment: constant stimuli or adaptive staircase, catch trials, RT, CSV + reproducibility sidecar | 1 short one-shot | `impact.hit` |
+| [psychophysics_experiment.py](psychophysics_experiment.py) | researchers | detection experiment: constant stimuli or adaptive staircase, catch trials, RT, CSV + reproducibility sidecar | 1 short one-shot | `sample-kit.sine_100hz` |
 | [breathing_pacer.py](breathing_pacer.py) | wellbeing / biofeedback | guided breathing: gain-ramped ticks, inhale markers, pattern morphing, tick log for ECG/PPG sync | 1 short, soft one-shot | `tick` |
 | [metronome.py](metronome.py) | musicians / runners | silent metronome: live tempo keys + tap tempo, odd meters (2+2+3), gap training, ramps, count-in | 1 short one-shot | `tick` |
 | [haptic_pad.py](haptic_pad.py) | live performance / Wizard-of-Oz | keyboard soundboard: loop toggling, per-pad trim, session record & replay, device re-scan | mapping source (below) | n/a |
-| [task_notifier.py](task_notifier.py) | developers / ML | wrap any command: success/failure buzz, heartbeat, output-regex pulses, stall watchdog, `--test` dry run | 1 short one-shot | `impact.hit` |
+| [task_notifier.py](task_notifier.py) | developers / ML | wrap any command: success/failure buzz, heartbeat, output-regex pulses, stall watchdog, `--test` dry run | 1 short one-shot | `sample-kit.sine_100hz` |
 | [morse_text.py](morse_text.py) | accessibility / learners | text to Morse vibrations: Farnsworth timing, Koch receive trainer (`--quiz`), play()/stop() duration control | looping buzz (or 2 one-shots) | `buzz` |
 
 ## Before you run anything
@@ -55,7 +55,7 @@ multiplier instead and is clamped to its 0.1..1.0 range).
 
 ```json
 {
-  "1": {"event": "impact.hit", "gain": 0.6},
+  "1": {"event": "sample-kit.sine_100hz", "gain": 0.6},
   "2": {"event": "rumble.loop", "gain": 0.8, "loop": true},
   "3": "heartbeat.slow"
 }

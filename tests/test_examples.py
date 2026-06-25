@@ -233,7 +233,7 @@ def test_load_pads_three_sources(tmp_path):
     pad = load("haptic_pad")
     manifest = {
         "schema_version": "2.0.0", "name": "test-kit",
-        "events": {"impact.hit": {"clip": "a.wav", "parameters": {"intensity": 0.8}}},
+        "events": {"sample-kit.sine_100hz": {"clip": "a.wav", "parameters": {"intensity": 0.8}}},
         "stream_events": {"rain.loop": {"clip": "c.wav",
                                         "parameters": {"intensity": 0.3, "loop": True}}},
     }
@@ -241,7 +241,7 @@ def test_load_pads_three_sources(tmp_path):
     mpath.write_text(json.dumps(manifest), encoding="utf-8")
     pads = pad.load_pads(make_pad_args(manifest=str(mpath)))
     assert [(p.key, p.event_id, p.gain, p.loop) for p in pads] == [
-        ("1", "impact.hit", 0.8, False), ("2", "rain.loop", 0.3, True)]
+        ("1", "sample-kit.sine_100hz", 0.8, False), ("2", "rain.loop", 0.3, True)]
 
     jpath = tmp_path / "pad.json"
     jpath.write_text(json.dumps({

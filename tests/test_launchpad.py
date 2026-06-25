@@ -110,8 +110,8 @@ def test_engine_start_stop_single_slot():
 def test_app_play_validates_event():
     app = launchpad.App(FakeHapbeat())
     assert app.play({"event": "", "gain": 0.5})["ok"] is False
-    assert app.play({"event": "impact.hit", "gain": 0.5})["ok"] is True
-    assert app.hb.ops[-1] == ("play", "impact.hit", 0.5)
+    assert app.play({"event": "sample-kit.sine_100hz", "gain": 0.5})["ok"] is True
+    assert app.hb.ops[-1] == ("play", "sample-kit.sine_100hz", 0.5)
 
 
 def test_app_metronome_fires_then_stops():
@@ -163,9 +163,9 @@ def _get(url):
 def test_http_index_and_play(server):
     app, base = server
     assert b"<html" in _get(base + "/")
-    res = _post(base + "/api/play", {"event": "impact.hit", "gain": 0.4})
+    res = _post(base + "/api/play", {"event": "sample-kit.sine_100hz", "gain": 0.4})
     assert res["ok"] is True
-    assert app.hb.ops[-1] == ("play", "impact.hit", 0.4)
+    assert app.hb.ops[-1] == ("play", "sample-kit.sine_100hz", 0.4)
 
 
 def test_http_stop_all(server):

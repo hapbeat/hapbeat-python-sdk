@@ -13,7 +13,7 @@ import time
 
 import hapbeat
 
-EVENT_ID = "impact.hit"  # <- change to an event id present in your kit
+EVENT_ID = "sample-kit.sine_100hz"  # <- change to an event id present in your kit
 
 with hapbeat.connect(app_name="PyExample") as hb:
     # Optional: see which devices are on the network.

@@ -21,7 +21,7 @@ Prerequisites:
       (pass its id with --event).
 
 Run:
-    python examples/psychophysics_experiment.py --event impact.hit
+    python examples/psychophysics_experiment.py --event sample-kit.sine_100hz
     python examples/psychophysics_experiment.py --method staircase \
         --subject P01 --rule 1up2down --reversals 8
     python examples/psychophysics_experiment.py --levels 0.05,0.1,0.2,0.4 \
@@ -251,8 +251,8 @@ def main() -> int:
     )
     parser.add_argument("--method", choices=("constant", "staircase"),
                         default="constant", help="psychophysical procedure")
-    parser.add_argument("--event", default="impact.hit",
-                        help="event id of a short one-shot in your kit (default: impact.hit)")
+    parser.add_argument("--event", default="sample-kit.sine_100hz",
+                        help="event id of a short one-shot in your kit (default: sample-kit.sine_100hz)")
     parser.add_argument("--levels", default="0.05,0.1,0.2,0.4,0.7,1.0",
                         help="constant: comma-separated gain levels, each in (0..1]")
     parser.add_argument("--trials", type=int, default=8,

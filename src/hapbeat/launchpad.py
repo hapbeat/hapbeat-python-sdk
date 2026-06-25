@@ -449,7 +449,7 @@ PAGE = r"""<!doctype html>
   <div class="bar">
     <div class="field" style="flex:2; min-width:220px;">
       <label>Default event id (used when a card's field is blank)</label>
-      <input id="defEvent" class="mono" placeholder="e.g. impact.hit" value="">
+      <input id="defEvent" class="mono" placeholder="e.g. sample-kit.sine_100hz" value="">
     </div>
     <div class="field">
       <label>Target (blank = all)</label>

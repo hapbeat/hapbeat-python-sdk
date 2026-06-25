@@ -12,7 +12,7 @@ python - <<'PY'
 import hapbeat, time
 hb = hapbeat.connect(app_name="ReleaseCheck")
 print("devices:", hb.discover(1.5))
-hb.play("impact.hit", gain=0.5)   # use a real event id from your kit
+hb.play("sample-kit.sine_100hz", gain=0.5)   # use a real event id from your kit
 time.sleep(1); hb.stop_all(); hb.close()
 PY
 ```

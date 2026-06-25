@@ -3,8 +3,8 @@
 Examples::
 
     hapbeat scan
-    hapbeat play impact.hit --gain 0.3
-    hapbeat stop impact.hit
+    hapbeat play sample-kit.sine_100hz --gain 0.3
+    hapbeat stop sample-kit.sine_100hz
     hapbeat stop-all
     hapbeat osc-bridge --listen 7702
     hapbeat launchpad

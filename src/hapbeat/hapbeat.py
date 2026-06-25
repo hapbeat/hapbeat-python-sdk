@@ -11,14 +11,14 @@ Typical use::
     import hapbeat
 
     hb = hapbeat.connect(app_name="MyExperiment")
-    hb.play("impact.hit", gain=0.3)
-    hb.stop("impact.hit")
+    hb.play("sample-kit.sine_100hz", gain=0.3)
+    hb.stop("sample-kit.sine_100hz")
     hb.close()
 
 or as a context manager::
 
     with hapbeat.connect() as hb:
-        hb.play("impact.hit")
+        hb.play("sample-kit.sine_100hz")
 """
 
 from __future__ import annotations

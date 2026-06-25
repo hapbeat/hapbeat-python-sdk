@@ -7,7 +7,7 @@ Drive a Hapbeat device from a Python script in a few lines.
 - Python 3.10+
 - A Hapbeat device powered on and joined to the **same Wi-Fi/LAN** as your computer.
 - A **kit deployed to the device** with [Hapbeat Studio](https://devtools.hapbeat.com).
-  The kit defines the event ids you can play (e.g. `impact.hit`).
+  The kit defines the event ids you can play (e.g. `sample-kit.sine_100hz`).
 
 ## Install
 
@@ -35,7 +35,7 @@ hapbeat launchpad
 import hapbeat
 
 hb = hapbeat.connect(app_name="MyApp")
-hb.play("impact.hit", gain=0.5)
+hb.play("sample-kit.sine_100hz", gain=0.5)
 hb.close()
 ```
 
@@ -60,15 +60,15 @@ manifest (the *tuning* side, separate from *firing*):
 ```python
 em = hapbeat.EventMap.from_manifest("my-kit/my-kit-manifest.json")
 with hapbeat.connect(event_map=em) as hb:
-    hb.play("impact.hit")      # fires at the manifest's intensity
+    hb.play("sample-kit.sine_100hz")      # fires at the manifest's intensity
 ```
 
 ## Targeting specific devices
 
 ```python
-hb.play("impact.hit", target="player_1/chest")   # one device
-hb.play("impact.hit", target="*/chest")           # all chest devices
-hb.play("impact.hit")                              # broadcast to all
+hb.play("sample-kit.sine_100hz", target="player_1/chest")   # one device
+hb.play("sample-kit.sine_100hz", target="*/chest")           # all chest devices
+hb.play("sample-kit.sine_100hz")                              # broadcast to all
 ```
 
 See the addressing spec in `hapbeat-contracts/specs/device-addressing.md`.
@@ -85,7 +85,7 @@ Keep the kit inside your project and load it with `connect(kit=...)`:
 
 ```python
 hb = hapbeat.connect(app_name="MyApp", kit="kits/my-kit")
-hb.play("impact.hit")   # command
+hb.play("sample-kit.sine_100hz")   # command
 hb.play("rain.loop")    # clip (streamed); hb.stop("rain.loop") ends it
 ```
 

@@ -139,7 +139,7 @@ class EventMap:
             {
               "kit": "kits/my-kit",          # kit folder, relative to this file
               "events": {
-                "impact.hit": { "target": "player_1/chest", "gain": 0.8 },
+                "sample-kit.sine_100hz": { "target": "player_1/chest", "gain": 0.8 },
                 "rain.loop":  { "target": "*/back" }
               }
             }

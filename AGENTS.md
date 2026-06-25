@@ -47,7 +47,7 @@ your scripts — for code, use a venv `pip install`.
 import hapbeat
 
 with hapbeat.connect(app_name="MyApp") as hb:   # context manager closes cleanly
-    hb.play("impact.hit", gain=0.5)             # gain 0..1; omit to use EventMap default
+    hb.play("sample-kit.sine_100hz", gain=0.5)             # gain 0..1; omit to use EventMap default
 ```
 
 ## Communication model
@@ -78,7 +78,7 @@ with hapbeat.connect(app_name="MyApp") as hb:   # context manager closes cleanly
 em = hapbeat.EventMap.from_file("haptics.json")   # overlay (kit + per-event target/gain) — recommended
 em = hapbeat.EventMap.from_kit("kits/my-kit")     # kit only (intensity/clip; no targeting)
 em = hapbeat.EventMap.from_manifest(path_or_dict) # a single manifest
-em = hapbeat.EventMap.from_dict({"impact.hit": 0.5})  # gains by hand (command only)
+em = hapbeat.EventMap.from_dict({"sample-kit.sine_100hz": 0.5})  # gains by hand (command only)
 ```
 
 `haptics.json`:
@@ -86,7 +86,7 @@ em = hapbeat.EventMap.from_dict({"impact.hit": 0.5})  # gains by hand (command o
 {
   "kit": "kits/my-kit",
   "events": {
-    "impact.hit": { "target": "player_1/chest", "gain": 0.8 },
+    "sample-kit.sine_100hz": { "target": "player_1/chest", "gain": 0.8 },
     "rain.loop":  { "target": "*/back" }
   }
 }
@@ -110,7 +110,7 @@ my-app/
 ```
 ```python
 hb = hapbeat.connect(app_name="MyApp", haptics="haptics.json")
-hb.play("impact.hit")     # target/strength come from the haptic file
+hb.play("sample-kit.sine_100hz")     # target/strength come from the haptic file
 ```
 
 ## Target syntax (device-addressing)

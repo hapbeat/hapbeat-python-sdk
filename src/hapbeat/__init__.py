@@ -5,7 +5,7 @@ Quick start::
     import hapbeat
 
     hb = hapbeat.connect(app_name="MyExperiment")
-    hb.play("impact.hit", gain=0.3)
+    hb.play("sample-kit.sine_100hz", gain=0.3)
     hb.stop_all()
     hb.close()
 

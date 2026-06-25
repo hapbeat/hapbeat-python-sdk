@@ -39,9 +39,9 @@ a tiny stdlib HTTP server that relays button presses to the device over UDP
 import hapbeat
 
 hb = hapbeat.connect(app_name="MyExperiment")  # opens UDP broadcast + keep-alive
-hb.play("impact.hit", gain=0.3)   # fire event "impact.hit" at gain 0.3
-hb.play("impact.hit")             # gain omitted -> kit baseline intensity
-hb.stop("impact.hit")
+hb.play("sample-kit.sine_100hz", gain=0.3)   # fire event "sample-kit.sine_100hz" at gain 0.3
+hb.play("sample-kit.sine_100hz")             # gain omitted -> kit baseline intensity
+hb.stop("sample-kit.sine_100hz")
 hb.stop_all()
 hb.close()
 ```
@@ -50,10 +50,10 @@ or as a context manager:
 
 ```python
 with hapbeat.connect(app_name="MyExperiment") as hb:
-    hb.play("impact.hit")
+    hb.play("sample-kit.sine_100hz")
 ```
 
-`"impact.hit"` must be an event id present in the **kit deployed to the
+`"sample-kit.sine_100hz"` must be an event id present in the **kit deployed to the
 device** (via [Hapbeat Studio](https://devtools.hapbeat.com)). The SDK sends
 the *instruction*; the waveform lives in the kit on the device.
 
@@ -72,11 +72,11 @@ so firing code never hard-codes intensities:
 ```python
 em = hapbeat.EventMap.from_manifest("my-kit/my-kit-manifest.json")
 hb = hapbeat.connect(event_map=em)
-hb.play("impact.hit")        # uses the kit manifest's intensity for this event
+hb.play("sample-kit.sine_100hz")        # uses the kit manifest's intensity for this event
 ```
 
 `EventMap` reads the kit manifest (schema 2.0.0) `intensity` as the baseline
-gain. You can also build one by hand: `EventMap.from_dict({"impact.hit": 0.5})`.
+gain. You can also build one by hand: `EventMap.from_dict({"sample-kit.sine_100hz": 0.5})`.
 
 ### Haptic file — add targeting on top of the kit
 
@@ -90,7 +90,7 @@ resolves the target without the caller passing it:
 {
   "kit": "kits/my-kit",
   "events": {
-    "impact.hit": { "target": "player_1/chest", "gain": 0.8 },
+    "sample-kit.sine_100hz": { "target": "player_1/chest", "gain": 0.8 },
     "rain.loop":  { "target": "*/back" }
   }
 }
@@ -98,7 +98,7 @@ resolves the target without the caller passing it:
 
 ```python
 hb = hapbeat.connect(app_name="MyApp", haptics="haptics.json")
-hb.play("impact.hit")     # goes to player_1/chest at gain 0.8 — from the file
+hb.play("sample-kit.sine_100hz")     # goes to player_1/chest at gain 0.8 — from the file
 ```
 
 ## Two playback modes: command and clip
@@ -125,7 +125,7 @@ my-app/
 ```python
 import hapbeat
 hb = hapbeat.connect(app_name="MyApp", kit="kits/my-kit")
-hb.play("impact.hit")     # command -> device plays its installed clip
+hb.play("sample-kit.sine_100hz")     # command -> device plays its installed clip
 hb.play("rain.loop")      # clip    -> SDK streams stream-clips/<wav> over UDP
 hb.stop("rain.loop")      # ends the active stream
 ```
@@ -156,7 +156,7 @@ See [docs/osc.md](docs/osc.md) for the address spec.
 
 ```bash
 hapbeat scan                       # list devices on the LAN
-hapbeat play impact.hit --gain 0.3
+hapbeat play sample-kit.sine_100hz --gain 0.3
 hapbeat stop-all
 hapbeat launchpad                  # browser UI for all of the above
 ```

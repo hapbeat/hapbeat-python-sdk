@@ -12,7 +12,7 @@ Key mapping comes from (first match wins):
 
 pad.json format ("loop": true marks events whose kit clip loops):
     {
-      "1": {"event": "impact.hit", "gain": 0.6},
+      "1": {"event": "sample-kit.sine_100hz", "gain": 0.6},
       "2": {"event": "rumble.loop", "gain": 0.8, "loop": true},
       "3": "heartbeat.slow"
     }
@@ -33,7 +33,7 @@ Session recording (Wizard-of-Oz replication):
 
 Run:
     python examples/haptic_pad.py --manifest my-kit/my-kit-manifest.json
-    python examples/haptic_pad.py --events impact.hit,rumble.loop --log run1.csv
+    python examples/haptic_pad.py --events sample-kit.sine_100hz,rumble.loop --log run1.csv
     python examples/haptic_pad.py --replay run1.csv
 """
 

@@ -163,8 +163,8 @@ def main() -> int:
         description="Run a command; notify success/failure through haptics.",
         epilog='Example: python task_notifier.py --heartbeat 30 -- pytest -x',
     )
-    parser.add_argument("--event", default="impact.hit",
-                        help="event id of a short one-shot in your kit (default: impact.hit)")
+    parser.add_argument("--event", default="sample-kit.sine_100hz",
+                        help="event id of a short one-shot in your kit (default: sample-kit.sine_100hz)")
     parser.add_argument("--fail-event", default=None,
                         help="separate event id for failure (default: --event)")
     parser.add_argument("--success-gain", type=gain01, default=0.6,
