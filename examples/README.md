@@ -19,6 +19,7 @@ dependencies beyond the SDK itself -- copy it out and make it yours.
 | [metronome.py](metronome.py) | musicians / runners | silent metronome: live tempo keys + tap tempo, odd meters (2+2+3), gap training, ramps, count-in | 1 short one-shot | `tick` |
 | [haptic_pad.py](haptic_pad.py) | live performance / Wizard-of-Oz | keyboard soundboard: loop toggling, per-pad trim, session record & replay, device re-scan | mapping source (below) | n/a |
 | [task_notifier.py](task_notifier.py) | developers / ML | wrap any command: success/failure buzz, heartbeat, output-regex pulses, stall watchdog, `--test` dry run | 1 short one-shot | `sample-kit.sine_100hz` |
+| [verify_unicast.py](verify_unicast.py) | maintainers | **release check**: continuous 100 Hz sine, broadcast vs unicast A/B by ear, plus a power-cycle test for the Windows ICMP path | none (tone is synthesized) | n/a |
 | [morse_text.py](morse_text.py) | accessibility / learners | text to Morse vibrations: Farnsworth timing, Koch receive trainer (`--quiz`), play()/stop() duration control | looping buzz (or 2 one-shots) | `buzz` |
 
 ## Before you run anything
