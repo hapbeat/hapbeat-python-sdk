@@ -30,10 +30,20 @@ def isolated_state(tmp_path, monkeypatch):
 
 
 def _seed_cache(entry=None, age_s: float = 0.0):
-    (uc.config_dir() / uc.STATE_FILENAME).write_text(json.dumps({
-        "entry": entry if entry is not None else dict(ENTRY),
-        "checked_at": time.time() - age_s,
-    }), encoding="utf-8")
+    """feed キャッシュだけ差し替える。
+
+    `notified` / `notified_at` は保持すること — ここで state を丸ごと上書きすると
+    「版が変わったから出た」のか「通知記録が消えたから出た」のか区別できなくなり、
+    間引きのテストが骨抜きになる。
+    """
+    p = uc.config_dir() / uc.STATE_FILENAME
+    try:
+        state = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        state = {}
+    state["entry"] = entry if entry is not None else dict(ENTRY)
+    state["checked_at"] = time.time() - age_s
+    p.write_text(json.dumps(state), encoding="utf-8")
 
 
 def test_import_does_not_touch_the_network(monkeypatch):
@@ -63,7 +73,8 @@ def test_is_newer():
     assert not uc.is_newer("nightly", "0.2.0")
 
 
-def test_notifies_once_then_stays_quiet(capsys):
+def test_notifies_then_stays_quiet_for_a_day(capsys):
+    """短命 CLI は連続実行され得るので、同じ版は 24h に 1 回まで (§5.1 B)。"""
     _seed_cache()
     uc.notify_cli("0.2.0")
     assert "0.3.0" in capsys.readouterr().err
@@ -72,7 +83,21 @@ def test_notifies_once_then_stays_quiet(capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_newer_release_breaks_the_silence(capsys):
+def test_notifies_again_after_the_interval(capsys):
+    """24h 経てば同じ版でも再度知らせる (見逃したまま放置させない)。"""
+    _seed_cache()
+    uc.notify_cli("0.2.0")
+    capsys.readouterr()
+
+    state = json.loads((uc.config_dir() / uc.STATE_FILENAME).read_text(encoding="utf-8"))
+    state["notified_at"] = time.time() - uc.NOTIFY_INTERVAL_S - 60
+    (uc.config_dir() / uc.STATE_FILENAME).write_text(json.dumps(state), encoding="utf-8")
+
+    uc.notify_cli("0.2.0")
+    assert "0.3.0" in capsys.readouterr().err
+
+
+def test_newer_release_does_not_wait_for_the_interval(capsys):
     _seed_cache()
     uc.notify_cli("0.2.0")
     capsys.readouterr()
@@ -80,6 +105,14 @@ def test_newer_release_breaks_the_silence(capsys):
     _seed_cache({**ENTRY, "latest": "0.4.0"})
     uc.notify_cli("0.2.0")
     assert "0.4.0" in capsys.readouterr().err
+
+
+def test_notice_is_english(capsys):
+    """CLI 出力は英語で統一 (この CLI の他の出力に合わせる)。"""
+    _seed_cache()
+    uc.notify_cli("0.2.0")
+    err = capsys.readouterr().err
+    assert err and not any("぀" <= ch <= "鿿" for ch in err)
 
 
 def test_no_cache_means_no_output_this_run(monkeypatch, capsys):

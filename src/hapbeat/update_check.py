@@ -10,11 +10,13 @@
 * **``import hapbeat`` では絶対にネットワークへ出ない。** チェックするのは
   ``hapbeat`` コマンドを実行したときだけ。ライブラリの import が外部通信を
   するのは、CI・オフライン環境・サンドボックスで有害な副作用になる。
-* **1 版につき 1 回だけ**通知する。一度出した版は記録し、より新しい版が出るまで
-  黙る (版を固定して開発している人に毎回同じ行を見せない)。
+* **24 時間に 1 回**まで (§5.1 B)。閉じる操作を要求しない 1 行なので版ごとの永続
+  抑制はしないが、``hapbeat play`` のような短命コマンドは連続実行され得るため
+  時間で間引く。**新しい版が出たら間隔を待たずに出す**。
 * 取得失敗は**完全にサイレント**。「最新版を確認できませんでした」は出さない。
 * CLI の実行を**待たせない**。キャッシュがあればそれを使い、無ければ裏で取りに
   行くだけで、その回は何も出さない (次回の実行で出る)。
+* 出力は英語 (この CLI の他の出力に合わせる)。
 * ``HAPBEAT_NO_UPDATE_CHECK=1`` で無効化できる。
 """
 
@@ -33,6 +35,9 @@ FEED_URL = "https://devtools.hapbeat.com/releases.json"
 PRODUCT_ID = "python-sdk"
 TIMEOUT_S = 3.0
 CACHE_TTL_S = 24 * 60 * 60
+#: 同じ版について再通知するまでの最短間隔。`hapbeat play` のような短命コマンドが
+#: 連続実行されても 1 日 1 行に収める。版が変われば間隔を待たずに出す。
+NOTIFY_INTERVAL_S = 24 * 60 * 60
 STATE_FILENAME = "update-check.json"
 
 
@@ -158,7 +163,7 @@ def _refresh_in_background() -> None:
 
 
 def pending_notice(current: str, entry: dict[str, Any] | None = None,
-                   *, respect_dismissed: bool = True) -> str | None:
+                   *, respect_interval: bool = True) -> str | None:
     """通知すべきなら 1 行のメッセージを返す。無ければ None。"""
     if opted_out():
         return None
@@ -169,17 +174,20 @@ def pending_notice(current: str, entry: dict[str, Any] | None = None,
     latest = entry.get("latest")
     if not is_newer(latest, current):
         return None
-    if respect_dismissed:
-        notified = _load_state().get("notified")
-        if notified and not is_newer(latest, notified):
+    if respect_interval:
+        state = _load_state()
+        # 同じ版を 24h 以内に出していたら黙る。版が変わっていれば即出す。
+        if (state.get("notified") == latest
+                and (time.time() - state.get("notified_at", 0)) < NOTIFY_INTERVAL_S):
             return None
     upgrade = entry.get("upgrade") or "pip install -U hapbeat-python-sdk"
-    return f"note: hapbeat-python-sdk {latest} が公開されています ({upgrade})"
+    return f"note: hapbeat-python-sdk {latest} is available ({upgrade})"
 
 
 def mark_notified(latest: str) -> None:
     state = _load_state()
     state["notified"] = latest
+    state["notified_at"] = time.time()
     _save_state(state)
 
 
