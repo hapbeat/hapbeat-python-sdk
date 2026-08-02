@@ -52,8 +52,16 @@ with hapbeat.connect(app_name="MyApp") as hb:   # context manager closes cleanly
 
 ## Communication model
 
-- Wi-Fi UDP broadcast; no ACK ("late is worse than dropped"). Devices self-filter
-  by group/target.
+- Wi-Fi UDP; no ACK ("late is worse than dropped"). Devices self-filter by
+  target, so the SDK's routing can never make the wrong device fire.
+- PLAY / STOP / STOP_ALL and clip streams are **unicast** to devices that
+  answered a recent PING; broadcast is the fallback while none is known.
+  APs delay broadcast frames up to one DTIM beacon (100–300 ms) whenever any
+  client on the AP is power-saving. `connect(unicast=False)` forces broadcast
+  (better when many devices must fire in lockstep); `device_ttl` sets how long
+  a device stays a destination after its last PONG.
+- PING / CONNECT_STATUS stay broadcast (discovery). The keep-alive PING is what
+  keeps unicast alive — devices reply PONG only to a PING.
 - `connect()` binds an **ephemeral** local receive port by default
   (`bind_port=0`) so it coexists with hapbeat-helper / Hapbeat Studio (which own
   UDP 7700). Pass `bind_port=7700` only to receive the device's unsolicited
@@ -115,16 +123,27 @@ hb.play("sample-kit.sine_100hz")     # target/strength come from the haptic file
 
 ## Target syntax (device-addressing)
 
-`player_1/chest` (one), `*/chest` (all chest), `group_<N>` suffix, `""` = broadcast.
+Device addresses are always `player_<N>/<position>/group_<M>` (defaults
+`player_1` / `group_1`). Matching is **positional** — segment *i* vs segment
+*i*, `*` covers one **whole** segment, a short target front-matches:
+
+- `""` — every device
+- `player_1` — every device of player 1 · `player_1/pos_neck` — exactly that one
+- `*/pos_neck` — that position on every player
+- `*/*/group_2` — group 2. **`group_2` alone never matches** (it is compared
+  against the player slot).
+- `player_1/*` — any position. **`pos_*` is not a wildcard** (compared literally).
+
 Resolution order at play time: call-site `target=` > the event's `target` (haptic
-file) > the connection `default_target`.
+file) > the connection `default_target`. `protocol.address_matches(target,
+address)` is the same check the device runs.
 
 ## Public API cheat-sheet
 
 `hapbeat.connect(*, port=7700, broadcast_addr="255.255.255.255", app_name="",
 device_name="", group=0, default_target="", event_map=None, keepalive=True,
-bind_port=0, kit=None, haptics=None, clip_base=None, stream_send_ahead=0.15) ->
-Hapbeat`
+bind_port=0, kit=None, haptics=None, clip_base=None, stream_send_ahead=0.15,
+unicast=True, device_ttl=None) -> Hapbeat`
 
 `Hapbeat`:
 - `play(event_id, gain=None, *, target=None, target_time_us=0) -> bool`

@@ -38,7 +38,7 @@ a tiny stdlib HTTP server that relays button presses to the device over UDP
 ```python
 import hapbeat
 
-hb = hapbeat.connect(app_name="MyExperiment")  # opens UDP broadcast + keep-alive
+hb = hapbeat.connect(app_name="MyExperiment")  # opens the UDP socket + keep-alive
 hb.play("sample-kit.sine_100hz", gain=0.3)   # fire event "sample-kit.sine_100hz" at gain 0.3
 hb.play("sample-kit.sine_100hz")             # gain omitted -> kit baseline intensity
 hb.stop("sample-kit.sine_100hz")
@@ -63,6 +63,19 @@ the *instruction*; the waveform lives in the kit on the device.
 for dev in hb.discover(timeout=1.5):
     print(dev.ip, dev.address, dev.firmware_version)
 ```
+
+### How packets are sent
+
+Commands and clip streams are **unicast** to every device that answered a PING,
+and broadcast only while no device is known. Wi-Fi APs hold broadcast frames
+until their next DTIM beacon (100–300 ms) whenever any client on the AP is
+power-saving, which is heard as late haptics and stuttering streams; unicast is
+not batched that way. The 5-second keep-alive PING keeps that table current, so
+leave `keepalive=True`.
+
+Pass `connect(unicast=False)` to always broadcast — worth it when many devices
+must fire in lockstep, since one broadcast reaches them all at once while N
+unicasts go out one after another.
 
 ## EventMap — the tuning side (optional)
 
@@ -90,15 +103,23 @@ resolves the target without the caller passing it:
 {
   "kit": "kits/my-kit",
   "events": {
-    "sample-kit.sine_100hz": { "target": "player_1/chest", "gain": 0.8 },
-    "rain.loop":  { "target": "*/back" }
+    "sample-kit.sine_100hz": { "target": "player_1/pos_neck", "gain": 0.8 },
+    "rain.loop":  { "target": "*/pos_back" }
   }
 }
 ```
 
+Targets are matched **positionally**: segment *i* of the target is compared
+with segment *i* of the device address, `*` stands for one **whole** segment
+(`pos_*` is compared literally — use `player_1/*`), and a short target
+front-matches. Device addresses are always `player_<N>/<position>/group_<M>`,
+defaulting to `player_1` / `group_1`, so a group has to be written
+`*/*/group_2`: plain `group_2` is compared against the *player* slot and never
+matches.
+
 ```python
 hb = hapbeat.connect(app_name="MyApp", haptics="haptics.json")
-hb.play("sample-kit.sine_100hz")     # goes to player_1/chest at gain 0.8 — from the file
+hb.play("sample-kit.sine_100hz")     # goes to player_1/pos_neck at gain 0.8 — from the file
 ```
 
 ## Two playback modes: command and clip

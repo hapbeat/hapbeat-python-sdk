@@ -1,8 +1,10 @@
 """UDP transport for the Hapbeat SDK.
 
-Owns one datagram socket configured for broadcast. Sends command packets to
-the LAN broadcast address and runs a background thread that collects PONG
-replies so device discovery works.
+Owns one datagram socket configured for broadcast. Sends packets either to a
+known device (unicast) or to the LAN broadcast address, and runs a background
+thread that collects PONG replies so device discovery works. Which of the two
+a given packet takes is decided one layer up, in :class:`hapbeat.Hapbeat`,
+which is the layer that tracks devices.
 
 Design note — port binding:
     The standard transport is Wi-Fi UDP broadcast (see workspace CLAUDE.md).
@@ -19,7 +21,7 @@ import logging
 import socket
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from . import protocol
 
@@ -61,6 +63,20 @@ class UdpClient:
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        # Windows only: a prior sendto() to an unreachable peer queues an ICMP
+        # port-unreachable, which Winsock surfaces as ConnectionResetError
+        # (WinError 10054) on the *next* recvfrom() — even on this unconnected
+        # socket. Once we unicast (a device that is off, rebooting, or being
+        # reflashed is unreachable) that becomes routine, and the recv loop
+        # below would die on it: the SDK would then go deaf to ALL PONGs until
+        # the process restarts. SIO_UDP_CONNRESET=False tells Windows to ignore
+        # those resets. No-op elsewhere (the constant is Windows-only).
+        # Same fix as hapbeat-helper f06fa04, which shipped before this SDK.
+        if hasattr(socket, "SIO_UDP_CONNRESET"):
+            try:
+                sock.ioctl(socket.SIO_UDP_CONNRESET, False)
+            except OSError as exc:
+                logger.debug("SIO_UDP_CONNRESET ioctl failed (non-fatal): %s", exc)
         if self.bind_port == self.port:
             # Only when contending for the shared well-known port do we ask to
             # reuse it; an ephemeral bind needs no reuse and must not steal a
@@ -129,6 +145,19 @@ class UdpClient:
             logger.warning("UDP send to %s:%d failed: %s", dst, self.port, exc)
             return False
 
+    def send_many(self, packet: bytes, addrs: Iterable[str]) -> bool:
+        """Unicast the same packet to several devices.
+
+        Returns True if at least one send succeeded. One unreachable device
+        (powered off between its last PONG and now) must not stop the packet
+        from reaching the others, so failures are logged and skipped.
+        """
+        sent = False
+        for addr in addrs:
+            if self.send(packet, addr):
+                sent = True
+        return sent
+
     # ── Recv loop ───────────────────────────────────────────────────
     def _recv_loop(self) -> None:
         while self._running:
@@ -139,8 +168,17 @@ class UdpClient:
                 data, addr = sock.recvfrom(4096)
             except socket.timeout:
                 continue
-            except OSError:
-                break
+            except OSError as exc:
+                if not self._running or self._sock is None:
+                    break  # closed by close() — expected exit
+                # Still running: residual ICMP-unreachable (should be
+                # suppressed by SIO_UDP_CONNRESET above, but stay defensive in
+                # case the ioctl was unavailable) or a brief NIC flap. Breaking
+                # here is exactly what makes an SDK go permanently deaf to
+                # PONGs, so back off briefly and keep listening.
+                logger.debug("UDP recv transient error (continuing): %s", exc)
+                time.sleep(0.2)
+                continue
             pong = protocol.parse_pong(data)
             if pong is None:
                 continue

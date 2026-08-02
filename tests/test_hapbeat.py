@@ -42,8 +42,16 @@ class FakeUdpClient:
             pass
 
     def send(self, packet, addr=None):
-        self.sent.append(packet)
+        # (packet, addr) — addr None means broadcast, so routing tests can
+        # assert *where* a packet went, not just that one went out.
+        self.sent.append((packet, addr))
         return True
+
+    def send_many(self, packet, addrs):
+        sent = False
+        for addr in addrs:
+            sent = self.send(packet, addr) or sent
+        return sent
 
 
 def keepalive_threads():

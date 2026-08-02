@@ -28,9 +28,9 @@ try:  # populated from installed package metadata
     try:
         __version__ = version("hapbeat-python-sdk")
     except PackageNotFoundError:  # running from a source checkout
-        __version__ = "0.1.0+local"
+        __version__ = "0.2.0+local"
 except ImportError:  # pragma: no cover
-    __version__ = "0.1.0+local"
+    __version__ = "0.2.0+local"
 
 __all__ = [
     "connect",

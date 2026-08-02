@@ -55,7 +55,11 @@ def _now_us() -> int:
 
 
 class Hapbeat:
-    """A connection to Hapbeat devices over Wi-Fi UDP broadcast."""
+    """A connection to Hapbeat devices over Wi-Fi UDP.
+
+    Commands go out by unicast to every device that answered a recent PING,
+    and by broadcast until one does (see ``unicast`` in :func:`connect`).
+    """
 
     def __init__(
         self,
@@ -72,6 +76,8 @@ class Hapbeat:
         bind_port: int = 0,
         clip_base: Optional[Union[str, Path]] = None,
         stream_send_ahead: float = 0.15,
+        unicast: bool = True,
+        device_ttl: Optional[float] = None,
     ) -> None:
         self._client = UdpClient(port=port, broadcast_addr=broadcast_addr,
                                  bind_port=bind_port)
@@ -92,6 +98,23 @@ class Hapbeat:
         self._keepalive_stop: Optional[threading.Event] = None
         self._keepalive_thread: Optional[threading.Thread] = None
         self._opened = False
+        # Send PLAY/STOP/STOP_ALL/STREAM_* straight to devices we have heard a
+        # PONG from, instead of broadcasting. See _command_destinations.
+        self.unicast = unicast
+        # How long a device stays a unicast destination after its last PONG.
+        # Default: three keep-alive PINGs' worth (min 5 s), the same window the
+        # Unity SDK uses. Too short and every command falls back to broadcast;
+        # too long and we keep unicasting at a device that was powered off,
+        # never returning to broadcast for the rest of the session.
+        self.device_ttl = (
+            device_ttl if device_ttl is not None
+            else max(5.0, keepalive_interval * 3.0)
+        )
+        # Unicast destinations for the active stream session, snapshotted once
+        # in stream_begin (STREAM_DATA/END carry no target of their own).
+        # None = broadcast the session; [] = the snapshot matched nobody, so
+        # send nothing; non-empty = unicast to exactly these IPs.
+        self._stream_dests: Optional[list[str]] = None
         # Clip streaming (level-2). The streamer calls this object's
         # stream_begin/stream_data/stream_end (StreamSink protocol).
         self._clip = ClipStreamer(self, send_ahead_sec=stream_send_ahead)
@@ -106,7 +129,7 @@ class Hapbeat:
         self._opened = True
         self._client.add_pong_listener(self._on_pong)
         self._client.open()
-        if self._keepalive and self.app_name:
+        if self._keepalive:
             self._start_keepalive()
         return self
 
@@ -149,6 +172,50 @@ class Hapbeat:
             return ev.target
         return self.default_target
 
+    # ── Send routing (unicast vs broadcast) ─────────────────────────
+    #
+    # Wi-Fi broadcast is held back by the AP: whenever any client on the AP is
+    # power-saving, group-addressed frames are buffered until the next DTIM
+    # beacon (100-300 ms). That shows up as a late haptic on one-shot commands
+    # and as periodic dropouts in a clip stream, and the device cannot avoid it
+    # (the delay is caused by *other* clients). Unicast frames are not batched,
+    # and they get MAC-level ACK/retry as a bonus. Measured and confirmed on
+    # the Unity SDK before being ported here.
+    def _alive_devices(self) -> list[Device]:
+        cutoff = time.monotonic() - self.device_ttl
+        with self._devices_lock:
+            return [d for d in self._devices.values() if d.last_seen >= cutoff]
+
+    def _matching_ips(self, target: str) -> list[str]:
+        """Alive devices whose address accepts ``target``.
+
+        A device that has not reported an address (older firmware, or no PONG
+        parsed yet) is kept — fail open. Worst case is one extra unicast
+        packet that the device itself filters out; the opposite mistake would
+        silently drop a command the device would have accepted.
+        """
+        return [
+            d.ip for d in self._alive_devices()
+            if not d.address or protocol.address_matches(target, d.address)
+        ]
+
+    def _send_routed(self, packet: bytes, target: str) -> bool:
+        """Send one PLAY/STOP/STOP_ALL, unicast when we can.
+
+        Falls back to broadcast when unicast is off, when no device has PONGed
+        recently, *and* when every alive device's address mismatches — never
+        skipping the send. The device re-applies the same target filter on
+        receipt, so a broadcast can never fire a device the target did not
+        address; whereas skipping would silently lose the packet whenever our
+        cached address is stale (a STOP lost that way leaves a loop running).
+        """
+        if not self.unicast:
+            return self._client.send(packet)
+        dests = self._matching_ips(target)
+        if not dests:
+            return self._client.send(packet)
+        return self._client.send_many(packet, dests)
+
     # ── Fire API (level-1) ──────────────────────────────────────────
     def play(
         self,
@@ -186,7 +253,7 @@ class Hapbeat:
             target_time_us=target_time_us,
             gain=gain,
         )
-        return self._client.send(pkt)
+        return self._send_routed(pkt, target_eff)
 
     def stop(self, event_id: str, *, target: Optional[str] = None) -> bool:
         """Stop one event id. Clip events end the active stream; command
@@ -195,18 +262,16 @@ class Hapbeat:
         if ev is not None and ev.streaming:
             self._clip.stop()
             return True
-        pkt = protocol.build_stop(
-            self._next_seq(), event_id, target=self._effective_target(ev, target)
-        )
-        return self._client.send(pkt)
+        target_eff = self._effective_target(ev, target)
+        pkt = protocol.build_stop(self._next_seq(), event_id, target=target_eff)
+        return self._send_routed(pkt, target_eff)
 
     def stop_all(self, *, target: Optional[str] = None) -> bool:
         """Stop every event on matching devices (and any active clip stream)."""
         self._clip.stop()
-        pkt = protocol.build_stop_all(
-            self._next_seq(), target=self._resolve_target(target)
-        )
-        return self._client.send(pkt)
+        target_eff = self._resolve_target(target)
+        pkt = protocol.build_stop_all(self._next_seq(), target=target_eff)
+        return self._send_routed(pkt, target_eff)
 
     def ping(self) -> bool:
         """Broadcast a PING (keep-alive / discovery probe)."""
@@ -335,19 +400,53 @@ class Hapbeat:
         return wav
 
     # ── StreamSink (called by ClipStreamer) ─────────────────────────
+    def _snapshot_stream_destinations(self, target: str) -> None:
+        """Pick the destinations for one stream session.
+
+        Only STREAM_BEGIN carries a target, so the choice is made once here and
+        reused for every STREAM_DATA/END of the session (also keeping the
+        destination set stable while the clip thread is running).
+
+        Unlike a one-shot command, a filtered-to-empty result means *send
+        nothing* rather than broadcast: a stream is hundreds of packets, and
+        blasting all of them at devices the target excluded would waste far
+        more airtime than a lost stream costs (the device just stays silent —
+        nothing gets stuck, unlike a lost STOP).
+        """
+        if not self.unicast:
+            self._stream_dests = None
+            return
+        alive = self._alive_devices()
+        if not alive:
+            self._stream_dests = None  # nobody known yet -> broadcast
+            return
+        self._stream_dests = [
+            d.ip for d in alive
+            if not d.address or protocol.address_matches(target, d.address)
+        ]
+
+    def _send_stream(self, packet: bytes) -> bool:
+        dests = self._stream_dests
+        if dests is None:
+            return self._client.send(packet)
+        if not dests:
+            return False  # snapshot matched no device — see _snapshot_stream_destinations
+        return self._client.send_many(packet, dests)
+
     def stream_begin(self, *, sample_rate: int, channels: int,
                      total_samples: int, gain: float, target: str) -> None:
-        self._client.send(protocol.build_stream_begin(
+        self._snapshot_stream_destinations(target)
+        self._send_stream(protocol.build_stream_begin(
             self._next_seq(), sample_rate=sample_rate, channels=channels,
             fmt=protocol.AUDIO_FORMAT_PCM16, total_samples=total_samples,
             gain=gain, target=target,
         ))
 
     def stream_data(self, offset: int, data: bytes) -> None:
-        self._client.send(protocol.build_stream_data(self._next_seq(), offset, data))
+        self._send_stream(protocol.build_stream_data(self._next_seq(), offset, data))
 
     def stream_end(self) -> None:
-        self._client.send(protocol.build_stream_end(self._next_seq()))
+        self._send_stream(protocol.build_stream_end(self._next_seq()))
 
     # ── Discovery ───────────────────────────────────────────────────
     def discover(self, timeout: float = 1.0) -> list[Device]:
@@ -374,12 +473,24 @@ class Hapbeat:
 
     # ── Keep-alive thread ───────────────────────────────────────────
     def _start_keepalive(self) -> None:
+        """Periodic PING (+ CONNECT_STATUS when an app name is set).
+
+        The PING is what keeps unicast working: the device answers PONG *only*
+        to a PING (CONNECT_STATUS gets no reply), so without this every device
+        would age out of the destination table after ``device_ttl`` and the
+        session would silently fall back to broadcast forever. It doubles as
+        discovery for devices that join late.
+        """
         self._keepalive_stop = threading.Event()
-        self.connect_status(connected=True)
+        self.ping()
+        if self.app_name:
+            self.connect_status(connected=True)
 
         def loop(stop: threading.Event) -> None:
             while not stop.wait(self._keepalive_interval):
-                self.connect_status(connected=True)
+                self.ping()
+                if self.app_name:
+                    self.connect_status(connected=True)
 
         self._keepalive_thread = threading.Thread(
             target=loop, args=(self._keepalive_stop,),
@@ -410,6 +521,8 @@ def connect(
     haptics: Optional[Union[str, Path]] = None,
     clip_base: Optional[Union[str, Path]] = None,
     stream_send_ahead: float = 0.15,
+    unicast: bool = True,
+    device_ttl: Optional[float] = None,
 ) -> Hapbeat:
     """Open a connection and return a ready :class:`Hapbeat`.
 
@@ -425,6 +538,16 @@ def connect(
       - ``kit`` — a kit folder; ``EventMap.from_kit`` (intensity/clip only,
         no targeting).
     ``clip_base`` overrides where clip WAVs are read (default ``<kit>/stream-clips/``).
+
+    ``unicast=True`` (default) sends PLAY/STOP/STOP_ALL and clip streams
+    straight to the devices that answered a PING, instead of broadcasting —
+    Wi-Fi APs hold broadcast frames until the next DTIM beacon (100-300 ms),
+    which is heard as late haptics and stuttering streams. It falls back to
+    broadcast until a device replies. Set ``unicast=False`` to always
+    broadcast (e.g. many devices that must fire in lockstep, where one
+    broadcast beats N sequential unicasts). ``device_ttl`` is how long a
+    device stays a destination after its last PONG (default: 3 keep-alive
+    intervals, min 5 s).
     """
     if event_map is None:
         if haptics is not None:
@@ -443,4 +566,6 @@ def connect(
         bind_port=bind_port,
         clip_base=clip_base,
         stream_send_ahead=stream_send_ahead,
+        unicast=unicast,
+        device_ttl=device_ttl,
     ).open()
