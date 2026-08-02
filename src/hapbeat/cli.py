@@ -72,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    # 新しい版が出ていれば stderr に 1 行だけ (同じ版では 2 回目を出さない)。
+    # キャッシュが無ければ裏で取りに行くだけでコマンドは待たせない。
+    # ライブラリ import 側では絶対に呼ばない — CLI 実行時のみ (DEC-053 §5.4)。
+    from . import update_check
+    update_check.notify_cli(__version__)
+
     if args.command == "osc-bridge":
         from .osc import OscBridge
 
