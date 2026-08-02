@@ -36,7 +36,7 @@ TONE_HZ = 100.0           # continuous low sine = worst case for the transport
 SAMPLE_RATE = 16000       # the device plays 16 kHz PCM16
 AMPLITUDE = 0.8           # headroom; loudness comes from GAIN below
 GAIN = 0.6                # wire gain (0..1) -- raise if you can barely feel it
-PHASE_SECONDS = 15        # per A/B phase
+PHASE_SECONDS = 5         # per A/B phase: long enough to hear, short enough to compare
 ICMP_STREAM_SECONDS = 90  # long enough to power-cycle inside
 
 
