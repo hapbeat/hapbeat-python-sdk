@@ -25,6 +25,10 @@ class FakeUdpClient:
         self.listeners = []
         self.open_calls = 0
         self.sent = []
+        # Packets that took the discovery fan-out. Kept apart from `sent` so a
+        # test can prove PLAY/STOP never take it — duplicating those would fire
+        # the haptic twice on firmware without sequence de-duplication.
+        self.discovery_sent = []
 
     def open(self):
         self.open_calls += 1
@@ -45,6 +49,10 @@ class FakeUdpClient:
         # (packet, addr) — addr None means broadcast, so routing tests can
         # assert *where* a packet went, not just that one went out.
         self.sent.append((packet, addr))
+        return True
+
+    def send_discovery(self, packet):
+        self.discovery_sent.append(packet)
         return True
 
     def send_many(self, packet, addrs):

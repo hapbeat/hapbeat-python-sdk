@@ -106,6 +106,16 @@ def main(argv: list[str] | None = None) -> int:
 
     hb = connect(port=args.port, default_target=getattr(args, "target", ""), keepalive=False)
     try:
+        if args.command in ("play", "stop", "stop-all"):
+            # Discover before sending. Without a PONG the SDK knows no devices,
+            # so the command would go out as a broadcast — which the AP holds
+            # back until the next DTIM beacon, and which on a multi-homed host
+            # may leave through an interface with no Hapbeat behind it. One
+            # reply is enough to pick the subnet and unicast, and it normally
+            # arrives in a few milliseconds; the wait only costs the full
+            # window when nothing is there to answer.
+            hb.discover(timeout=0.4, stop_early=True)
+
         if args.command == "play":
             ok = hb.play(args.event_id, args.gain)
             print(f"play {args.event_id} gain={args.gain if args.gain is not None else 'baseline'} -> {'sent' if ok else 'FAILED'}")

@@ -140,13 +140,19 @@ def test_unicast_disabled_always_broadcasts(fake_client):  # noqa: F811
 
 
 def test_ping_and_connect_status_stay_broadcast(fake_client):  # noqa: F811
-    """Discovery must reach devices we have not heard from yet."""
+    """Discovery must reach devices we have not heard from yet.
+
+    Both take the discovery fan-out rather than a unicast, so they also reach a
+    subnet the limited broadcast misses on a multi-homed host. See
+    test_broadcast_routes.py for why no *playback* packet may do the same.
+    """
     hb = hapbeat_mod.Hapbeat(keepalive=False, app_name="T").open()
     _seen(hb, "192.168.1.10")
     hb._client.sent.clear()
     hb.ping()
     hb.connect_status(connected=True)
-    assert [addr for _, addr in hb._client.sent] == [None, None]
+    assert hb._client.sent == []
+    assert len(hb._client.discovery_sent) == 2
 
 
 # ── Stream sessions ────────────────────────────────────────────────

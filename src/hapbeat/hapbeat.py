@@ -274,8 +274,14 @@ class Hapbeat:
         return self._send_routed(pkt, target_eff)
 
     def ping(self) -> bool:
-        """Broadcast a PING (keep-alive / discovery probe)."""
-        return self._client.send(protocol.build_ping(self._next_seq(), _now_us()))
+        """Broadcast a PING (keep-alive / discovery probe).
+
+        Goes out on every local subnet until a device answers — this is what
+        finds a Hapbeat that the limited broadcast cannot reach on a multi-homed
+        host. Safe to duplicate: a device answers each PING independently.
+        """
+        return self._client.send_discovery(
+            protocol.build_ping(self._next_seq(), _now_us()))
 
     def connect_status(self, *, connected: bool = True) -> bool:
         """Announce connection state so the device OLED shows the app name."""
@@ -286,7 +292,9 @@ class Hapbeat:
             app_name=self.app_name,
             device_name=self.device_name,
         )
-        return self._client.send(pkt)
+        # Idempotent display state, so it can share the discovery fan-out and
+        # clear "app not connected" without waiting for a PONG first.
+        return self._client.send_discovery(pkt)
 
     # ── Clip streaming (level-2) ─────────────────────────────────────
     def play_clip(
@@ -449,13 +457,34 @@ class Hapbeat:
         self._send_stream(protocol.build_stream_end(self._next_seq()))
 
     # ── Discovery ───────────────────────────────────────────────────
-    def discover(self, timeout: float = 1.0) -> list[Device]:
-        """Broadcast a PING and collect devices that reply within ``timeout``."""
+    def discover(self, timeout: float = 1.0, *, stop_early: bool = False) -> list[Device]:
+        """Broadcast a PING and collect devices that reply within ``timeout``.
+
+        ``stop_early`` returns as soon as the first device answers instead of
+        waiting the whole window. Use it when the point is to *route* the next
+        packet rather than to inventory the LAN — a one-shot command needs one
+        reply to know which subnet to send on, and on a quiet LAN that arrives
+        in a few milliseconds.
+        """
         before = time.monotonic()
         self.ping()
-        time.sleep(max(0.0, timeout))
-        with self._devices_lock:
-            return [d for d in self._devices.values() if d.last_seen >= before - 0.05]
+
+        def replied() -> list[Device]:
+            with self._devices_lock:
+                return [d for d in self._devices.values()
+                        if d.last_seen >= before - 0.05]
+
+        deadline = before + max(0.0, timeout)
+        if not stop_early:
+            time.sleep(max(0.0, timeout))
+            return replied()
+
+        while time.monotonic() < deadline:
+            found = replied()
+            if found:
+                return found
+            time.sleep(0.01)
+        return replied()
 
     @property
     def devices(self) -> list[Device]:
