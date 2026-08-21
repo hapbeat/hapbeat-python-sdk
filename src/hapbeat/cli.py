@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_play = sub.add_parser("play", help="play an event by id")
     p_play.add_argument("event_id")
     p_play.add_argument("--gain", type=float, default=None, help="0..1 (default: kit baseline)")
+    p_play.add_argument("--pan", type=float, default=0.0,
+                        help="-1 left .. 0 centre .. +1 right (default 0)")
     _add_common(p_play)
 
     p_stop = sub.add_parser("stop", help="stop one event id")
@@ -117,8 +119,8 @@ def main(argv: list[str] | None = None) -> int:
             hb.discover(timeout=0.4, stop_early=True)
 
         if args.command == "play":
-            ok = hb.play(args.event_id, args.gain)
-            print(f"play {args.event_id} gain={args.gain if args.gain is not None else 'baseline'} -> {'sent' if ok else 'FAILED'}")
+            ok = hb.play(args.event_id, args.gain, pan=args.pan)
+            print(f"play {args.event_id} gain={args.gain if args.gain is not None else 'baseline'} pan={args.pan} -> {'sent' if ok else 'FAILED'}")
         elif args.command == "stop":
             print("sent" if hb.stop(args.event_id) else "FAILED")
         elif args.command == "stop-all":

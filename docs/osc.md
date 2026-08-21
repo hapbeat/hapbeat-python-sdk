@@ -38,7 +38,7 @@ Trailing arguments are optional (sensible defaults are used).
 
 | Address | Arguments |
 |---|---|
-| `/hapbeat/play` | `event_id` `[target]` `[target_time_us]` `[gain]` |
+| `/hapbeat/play` | `event_id` `[target]` `[target_time_us]` `[gain]` `[pan]` |
 | `/hapbeat/stop` | `event_id` `[target]` |
 | `/hapbeat/stop-all` | `[target]` |
 | `/hapbeat/ping` | — |

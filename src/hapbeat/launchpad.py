@@ -131,7 +131,8 @@ class App:
         if not event:
             return {"ok": False, "error": "event id is empty"}
         ok = self.hb.play(event, _num(p, "gain", 0.5, 0, 1),
-                          target=str(p.get("target", "")))
+                          target=str(p.get("target", "")),
+                          pan=_num(p, "pan", 0.0, -1, 1))
         return {"ok": bool(ok)}
 
     def stop_all(self) -> dict:

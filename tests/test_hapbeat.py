@@ -110,3 +110,21 @@ def test_close_is_idempotent_and_reopen_works(fake_client):
     assert len(hb._client.listeners) == 1
     hb.close()
     assert hb._client.listeners == []
+
+
+def test_play_pan_reaches_the_wire(fake_client):
+    """The pan argument must survive the client, not stop at the API."""
+    import struct
+
+    from hapbeat import protocol
+
+    hb = hapbeat_mod.Hapbeat(keepalive=False).open()
+    try:
+        hb.play("kit.evt", 1.0, pan=0.5)
+        packet, _addr = hb._client.sent[-1]
+        cmd, _seq, payload = protocol.parse_packet(packet)
+        assert cmd == protocol.CMD_PLAY
+        (pan,) = struct.unpack("<f", payload[-4:])
+        assert abs(pan - 0.5) < 1e-6
+    finally:
+        hb.close()

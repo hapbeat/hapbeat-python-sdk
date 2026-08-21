@@ -33,9 +33,28 @@ def test_play_layout():
     assert cmd == protocol.CMD_PLAY and seq == 7
     prefix = b"explosion\x00player_1/chest\x00"
     assert payload.startswith(prefix)
-    target_time, gain = struct.unpack("<qf", payload[len(prefix):])
+    target_time, gain, pan = struct.unpack("<qff", payload[len(prefix):])
     assert target_time == 0
     assert abs(gain - 0.5) < 1e-6
+    assert pan == 0.0  # always written, centre by default (DEC-055)
+
+
+def test_play_pan_is_trailing_float():
+    """pan is the last 4 bytes and never displaces the fields before it."""
+    centred = protocol.build_play(1, "boom", gain=0.5)
+    panned = protocol.build_play(1, "boom", gain=0.5, pan=-0.75)
+    assert len(panned) == len(centred)
+    assert panned[:-4] == centred[:-4]  # only the trailing f32 differs
+    (pan,) = struct.unpack("<f", panned[-4:])
+    assert abs(pan - (-0.75)) < 1e-6
+
+
+def test_play_pan_is_clamped():
+    for given, expected in ((5.0, 1.0), (-5.0, -1.0)):
+        _, _, payload = protocol.parse_packet(
+            protocol.build_play(1, "boom", pan=given))
+        (pan,) = struct.unpack("<f", payload[-4:])
+        assert pan == expected
 
 
 def test_play_broadcast_empty_target():

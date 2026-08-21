@@ -4,7 +4,7 @@ Lets any OSC-capable tool (TouchOSC, Max/MSP, TouchDesigner, a DAW, vvvv, ...)
 drive Hapbeat without writing code, using the addresses defined in
 ``hapbeat-contracts/specs/message-format.md`` §6::
 
-    /hapbeat/play      event_id [target] [target_time_us] [gain]
+    /hapbeat/play      event_id [target] [target_time_us] [gain] [pan]
     /hapbeat/stop      event_id [target]
     /hapbeat/stop-all  [target]
     /hapbeat/ping
@@ -66,7 +66,9 @@ class OscBridge:
         target = str(args[1]) if len(args) >= 2 and args[1] != "" else None
         target_time = int(args[2]) if len(args) >= 3 else 0
         gain = float(args[3]) if len(args) >= 4 else None
-        self.hb.play(event_id, gain, target=target, target_time_us=target_time)
+        pan = float(args[4]) if len(args) >= 5 else 0.0
+        self.hb.play(event_id, gain, target=target, target_time_us=target_time,
+                     pan=pan)
 
     def _handle_stop(self, _address: str, *args) -> None:
         if not args:

@@ -100,18 +100,27 @@ def build_play(
     target: str = "",
     target_time_us: int = 0,
     gain: float = 1.0,
+    pan: float = 0.0,
 ) -> bytes:
     """PLAY (0x01).
 
     Wire payload (see contracts/specs/device-addressing.md §5.1):
         event_id(null-term) + target(null-term) + target_time(i64) + gain(f32)
+        + pan(f32)
 
     ``target=""`` broadcasts to every device.
+
+    ``pan`` is the left/right balance (-1 left, 0 centre, +1 right) applied by
+    the device mixer as linear balance (contracts message-format.md §0x01,
+    DEC-055). It is the *trailing optional* field of the payload — receivers
+    that predate it treat its absence as 0.0 — but we always write it, and
+    clamp to [-1, 1] here so an out-of-range value can never reach the wire.
     """
+    pan = max(-1.0, min(1.0, float(pan)))
     payload = (
         event_id.encode("utf-8") + b"\x00"
         + target.encode("utf-8") + b"\x00"
-        + struct.pack("<qf", int(target_time_us), float(gain))
+        + struct.pack("<qff", int(target_time_us), float(gain), pan)
     )
     return build_packet(CMD_PLAY, seq, payload)
 

@@ -41,6 +41,7 @@ import hapbeat
 hb = hapbeat.connect(app_name="MyExperiment")  # opens the UDP socket + keep-alive
 hb.play("sample-kit.sine_100hz", gain=0.3)   # fire event "sample-kit.sine_100hz" at gain 0.3
 hb.play("sample-kit.sine_100hz")             # gain omitted -> kit baseline intensity
+hb.play("sample-kit.sine_100hz", pan=-1)     # pan: -1 left / 0 centre / +1 right
 hb.stop("sample-kit.sine_100hz")
 hb.stop_all()
 hb.close()
@@ -165,7 +166,7 @@ not resample). A full runnable example is in
 ## Generic OSC bridge
 
 Any OSC tool (TouchOSC, Max/MSP, TouchDesigner, a DAW) can drive Hapbeat
-without code. Run the bridge and send `/hapbeat/play <event_id> [target] [time] [gain]`:
+without code. Run the bridge and send `/hapbeat/play <event_id> [target] [time] [gain] [pan]`:
 
 ```bash
 hapbeat osc-bridge --listen 7702

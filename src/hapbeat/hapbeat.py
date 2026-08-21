@@ -224,6 +224,7 @@ class Hapbeat:
         *,
         target: Optional[str] = None,
         target_time_us: int = 0,
+        pan: float = 0.0,
     ) -> bool:
         """Play a haptic event by id. The EventMap decides the mode.
 
@@ -235,7 +236,10 @@ class Hapbeat:
         Either way the caller writes the same one-liner. ``gain`` is the wire
         gain (0..1); when omitted, the bound :class:`EventMap` supplies the
         per-event default (its manifest ``intensity``), else ``1.0``.
-        ``target_time_us`` applies to command mode only.
+        ``pan`` is the left/right balance (-1 left, 0 centre, +1 right).
+        ``target_time_us`` and ``pan`` apply to command mode only — a clip
+        stream carries no pan field, so balance there is expressed by the
+        per-channel amplitude of the stereo PCM itself.
         """
         ev = self.event_map.get(event_id) if self.event_map else None
         if gain is None:
@@ -252,6 +256,7 @@ class Hapbeat:
             target=target_eff,
             target_time_us=target_time_us,
             gain=gain,
+            pan=pan,
         )
         return self._send_routed(pkt, target_eff)
 
@@ -359,7 +364,8 @@ class Hapbeat:
         target: Optional[str] = None,
     ) -> None:
         """Stream an ad-hoc PCM16 buffer (e.g. synthesized cues). ``channels=2``
-        with per-channel amplitude conveys L/R balance (PLAY has no pan)."""
+        with per-channel amplitude conveys L/R balance (a stream carries no pan
+        field of its own; ``play(..., pan=)`` is the command-mode equivalent)."""
         self._clip.play(
             pcm,
             sample_rate=sample_rate,

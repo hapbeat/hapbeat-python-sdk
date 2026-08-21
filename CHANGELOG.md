@@ -2,6 +2,13 @@
 
 `hapbeat-python-sdk`（import 名: `hapbeat`）の主要な変更点をまとめます。
 
+## Unreleased
+
+### 追加
+- `play()` に `pan` 引数（-1 = 左 / 0 = 中央 / +1 = 右）を追加した。PLAY パケット
+  末尾に f32 で常時付与する（contracts message-format.md §0x01 / DEC-055）。
+  CLI `hapbeat play --pan`、OSC `/hapbeat/play` の第 5 引数からも指定できる。
+
 ## 0.3.0 — マルチホーム環境での探索・送信の修正
 
 Unity SDK v0.4.0 で確定した接続まわりの修正を移植した。

@@ -48,6 +48,7 @@ import hapbeat
 
 with hapbeat.connect(app_name="MyApp") as hb:   # context manager closes cleanly
     hb.play("sample-kit.sine_100hz", gain=0.5)             # gain 0..1; omit to use EventMap default
+    hb.play("sample-kit.sine_100hz", pan=0.8)              # pan -1..+1 (left..right); command mode only
 ```
 
 ## Communication model
@@ -169,7 +170,7 @@ unicast=True, device_ttl=None) -> Hapbeat`
 ## OSC bridge
 
 Relays `/hapbeat/*` from any OSC tool (e.g. TouchOSC on a phone) to devices.
-Addresses: `/hapbeat/play <id> [target] [target_time_us] [gain]`,
+Addresses: `/hapbeat/play <id> [target] [target_time_us] [gain] [pan]`,
 `/hapbeat/stop <id> [target]`, `/hapbeat/stop-all [target]`, `/hapbeat/ping`.
 With `--haptics`, OSC events route command/clip and pick up per-event targets, so
 a sender only needs the event id. The bridge listen port (default 7702) is what
