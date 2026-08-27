@@ -1,0 +1,546 @@
+"""Endpoint-scoped multi-stream mixing for WifiUdp.
+
+Logical PCM sources are independent to callers, but Hapbeat devices expose one
+wire stream each.  StreamHub therefore resolves targets to exact PONG-reported
+device endpoints, mixes every matching source per endpoint, and owns the
+BEGIN/DATA/END lifecycle.  No stream packet is ever broadcast.
+"""
+
+from __future__ import annotations
+
+import enum
+import math
+import struct
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Callable, Optional, Protocol
+
+from . import protocol
+
+SAMPLE_RATE = 16_000
+CHANNELS = 2
+CHUNK_FRAMES = 256
+MAX_DATA_BYTES = CHUNK_FRAMES * CHANNELS * 2
+DEFAULT_SEND_AHEAD = 0.15
+# Keep an empty endpoint session alive for one AP beacon interval. A new source
+# can then join without END -> BEGIN, which may reorder/flush the previous tail.
+SESSION_END_LINGER = 0.31
+
+
+class PlaybackStatus(enum.Enum):
+    DEFERRED = "Deferred"
+    ACTIVE = "Active"
+    STOPPED = "Stopped"
+
+
+class DeferredReason(enum.Enum):
+    NO_RESOLVED_ENDPOINT = "NoResolvedEndpoint"
+
+
+@dataclass(frozen=True)
+class StreamEndpoint:
+    ip: str
+    address: str
+    port: int = 7700
+
+
+class EndpointStreamSink(Protocol):
+    def stream_begin_endpoint(self, endpoint: StreamEndpoint) -> None: ...
+
+    def stream_data_endpoint(
+        self, endpoint: StreamEndpoint, offset: int, data: bytes
+    ) -> None: ...
+
+    def stream_end_endpoint(self, endpoint: StreamEndpoint) -> None: ...
+
+
+@dataclass
+class _Source:
+    id: str
+    pcm: tuple[int, ...]
+    target: str
+    gain: float
+    pan: float
+    loop: bool
+    key: Optional[str]
+    playback: "StreamPlayback"
+    completed_endpoints: set[StreamEndpoint] = field(default_factory=set)
+
+    @property
+    def frames(self) -> int:
+        return len(self.pcm) // CHANNELS
+
+
+@dataclass
+class _EndpointSession:
+    endpoint: StreamEndpoint
+    cursors: dict[str, int] = field(default_factory=dict)
+    offset: int = 0
+    started_at: float = field(default_factory=time.perf_counter)
+    frames_sent: int = 0
+    empty_since: Optional[float] = None
+
+
+class StreamPlayback:
+    """Handle for one logical source registered with a :class:`StreamHub`."""
+
+    def __init__(
+        self,
+        hub: "StreamHub",
+        source_id: str,
+        *,
+        gain: float,
+        pan: float,
+        loop: bool,
+    ) -> None:
+        self._hub = hub
+        self.id = source_id
+        self._status = PlaybackStatus.DEFERRED
+        self._deferred_reason: Optional[DeferredReason] = (
+            DeferredReason.NO_RESOLVED_ENDPOINT
+        )
+        self._gain = gain
+        self._pan = pan
+        self._loop = loop
+
+    @property
+    def status(self) -> PlaybackStatus:
+        return self._status
+
+    @property
+    def deferred_reason(self) -> Optional[DeferredReason]:
+        return self._deferred_reason
+
+    @property
+    def gain(self) -> float:
+        return self._gain
+
+    @gain.setter
+    def gain(self, value: float) -> None:
+        self._gain = _clamp(float(value), 0.0, 1.0)
+        self._hub._set_source_property(self.id, "gain", self._gain)
+
+    @property
+    def pan(self) -> float:
+        return self._pan
+
+    @pan.setter
+    def pan(self, value: float) -> None:
+        self._pan = _clamp(float(value), -1.0, 1.0)
+        self._hub._set_source_property(self.id, "pan", self._pan)
+
+    @property
+    def loop(self) -> bool:
+        return self._loop
+
+    @loop.setter
+    def loop(self, value: bool) -> None:
+        self._loop = bool(value)
+        self._hub._set_source_property(self.id, "loop", self._loop)
+
+    def stop(self) -> None:
+        """Stop only this source. Repeated calls are harmless."""
+        self._hub.stop(self.id)
+
+    def _set_state(
+        self,
+        status: PlaybackStatus,
+        reason: Optional[DeferredReason] = None,
+    ) -> None:
+        self._status = status
+        self._deferred_reason = reason
+
+
+class StreamHub:
+    """Own all logical sources and endpoint wire sessions for one SDK client."""
+
+    def __init__(
+        self,
+        sink: EndpointStreamSink,
+        endpoint_provider: Callable[[], list[StreamEndpoint]],
+        *,
+        send_ahead_sec: float = DEFAULT_SEND_AHEAD,
+    ) -> None:
+        self._sink = sink
+        self._endpoint_provider = endpoint_provider
+        self._send_ahead = max(0.0, float(send_ahead_sec))
+        self._lock = threading.RLock()
+        self._wake = threading.Event()
+        self._closed = False
+        self._sources: dict[str, _Source] = {}
+        self._sessions: dict[StreamEndpoint, _EndpointSession] = {}
+        self._last_end_at: dict[tuple[str, str], float] = {}
+        self._thread: Optional[threading.Thread] = None
+
+    def play_pcm(
+        self,
+        pcm: bytes,
+        *,
+        sample_rate: int = SAMPLE_RATE,
+        channels: int = 1,
+        gain: float = 1.0,
+        pan: float = 0.0,
+        loop: bool = False,
+        target: str = "",
+        key: Optional[str] = None,
+    ) -> StreamPlayback:
+        """Register a finite or looping PCM16 source and return its handle."""
+        normalized = _normalize_pcm16(pcm, sample_rate=sample_rate, channels=channels)
+        if not normalized:
+            raise ValueError("pcm must contain at least one complete frame")
+        source_id = uuid.uuid4().hex
+        gain_value = _clamp(float(gain), 0.0, 1.0)
+        pan_value = _clamp(float(pan), -1.0, 1.0)
+        loop_value = bool(loop)
+        playback = StreamPlayback(
+            self,
+            source_id,
+            gain=gain_value,
+            pan=pan_value,
+            loop=loop_value,
+        )
+        source = _Source(
+            id=source_id,
+            pcm=normalized,
+            target=target,
+            gain=gain_value,
+            pan=pan_value,
+            loop=loop_value,
+            key=key,
+            playback=playback,
+        )
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("StreamHub is closed")
+            self._sources[source_id] = source
+            self._reconcile_locked()
+            self._ensure_thread_locked()
+        self._wake.set()
+        return playback
+
+    def stop(self, source_id: str) -> None:
+        with self._lock:
+            source = self._sources.pop(source_id, None)
+            if source is None:
+                return
+            source.playback._set_state(PlaybackStatus.STOPPED)
+            self._remove_source_from_sessions_locked(source_id)
+        self._wake.set()
+
+    def stop_key(self, key: str, *, target: Optional[str] = None) -> int:
+        with self._lock:
+            ids = [
+                source.id
+                for source in self._sources.values()
+                if source.key == key and (target is None or source.target == target)
+            ]
+        for source_id in ids:
+            self.stop(source_id)
+        return len(ids)
+
+    def stop_all(self) -> None:
+        with self._lock:
+            ids = list(self._sources)
+        for source_id in ids:
+            self.stop(source_id)
+
+    def stop_target(self, target: str) -> int:
+        with self._lock:
+            ids = [
+                source.id for source in self._sources.values()
+                if source.target == target
+            ]
+        for source_id in ids:
+            self.stop(source_id)
+        return len(ids)
+
+    def open(self) -> None:
+        """Allow a client that was closed to be opened and streamed again."""
+        with self._lock:
+            if not self._closed:
+                return
+            self._closed = False
+            self._thread = None
+
+    def reconcile(self) -> None:
+        """Apply the latest PONG/TTL endpoint set without crossing routes."""
+        with self._lock:
+            if not self._closed:
+                self._reconcile_locked()
+        self._wake.set()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            for source in self._sources.values():
+                source.playback._set_state(PlaybackStatus.STOPPED)
+            self._sources.clear()
+            for session in list(self._sessions.values()):
+                self._sink.stream_end_endpoint(session.endpoint)
+                self._record_end_locked(session.endpoint)
+            self._sessions.clear()
+            thread = self._thread
+        self._wake.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+
+    @property
+    def active_playbacks(self) -> tuple[StreamPlayback, ...]:
+        with self._lock:
+            return tuple(source.playback for source in self._sources.values())
+
+    def _ensure_thread_locked(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=self._run, name="hapbeat-stream-hub", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                if self._closed:
+                    return
+                self._reconcile_locked()
+                self._pump_locked()
+                if not self._sources and not self._sessions:
+                    self._thread = None
+                    return
+                wait = 0.005 if self._sessions else 0.25
+            self._wake.wait(wait)
+            self._wake.clear()
+
+    def _reconcile_locked(self) -> None:
+        cutoff = time.perf_counter() - SESSION_END_LINGER * 2
+        self._last_end_at = {
+            key: ended_at for key, ended_at in self._last_end_at.items()
+            if ended_at >= cutoff
+        }
+        endpoints = {
+            endpoint
+            for endpoint in self._endpoint_provider()
+            if endpoint.ip and endpoint.address
+        }
+
+        # Migrate an established session when either its exact device address or
+        # its IP still identifies one unambiguous new endpoint. Route-only
+        # changes continue DATA with the existing offset: END(old)->BEGIN(new)
+        # can reorder across an AP's DTIM buffer and kill the new session.
+        missing = [endpoint for endpoint in self._sessions if endpoint not in endpoints]
+        unclaimed = set(endpoints) - set(self._sessions)
+        for old_endpoint in missing:
+            candidates = [
+                endpoint for endpoint in unclaimed
+                if endpoint.address == old_endpoint.address
+                or endpoint.ip == old_endpoint.ip
+            ]
+            if len(candidates) != 1:
+                continue
+            new_endpoint = candidates[0]
+            session = self._sessions.pop(old_endpoint)
+            session.endpoint = new_endpoint
+            self._sessions[new_endpoint] = session
+            unclaimed.remove(new_endpoint)
+            for source in self._sources.values():
+                if old_endpoint in source.completed_endpoints:
+                    source.completed_endpoints.remove(old_endpoint)
+                    source.completed_endpoints.add(new_endpoint)
+
+        # A genuinely vanished endpoint is forgotten without END. If it later
+        # returns as a new endpoint, finite sources start there from frame zero.
+        for endpoint in tuple(self._sessions):
+            if endpoint not in endpoints:
+                self._sessions.pop(endpoint, None)
+                for source in self._sources.values():
+                    source.completed_endpoints.discard(endpoint)
+
+        now = time.perf_counter()
+        for session in self._sessions.values():
+            for source_id in tuple(session.cursors):
+                source = self._sources.get(source_id)
+                if source is None or not protocol.address_matches(
+                    source.target, session.endpoint.address
+                ):
+                    session.cursors.pop(source_id, None)
+            if not session.cursors:
+                session.empty_since = session.empty_since or now
+
+        for source in self._sources.values():
+            matched = [
+                endpoint for endpoint in endpoints
+                if protocol.address_matches(source.target, endpoint.address)
+            ]
+            for endpoint in matched:
+                if endpoint in source.completed_endpoints:
+                    continue
+                session = self._sessions.get(endpoint)
+                if session is None:
+                    if self._restart_cooldown_locked(endpoint):
+                        continue
+                    session = _EndpointSession(endpoint=endpoint)
+                    self._sessions[endpoint] = session
+                    self._sink.stream_begin_endpoint(endpoint)
+                if source.id not in session.cursors:
+                    if session.empty_since is not None:
+                        session.started_at = (
+                            time.perf_counter() - session.frames_sent / SAMPLE_RATE
+                        )
+                        session.empty_since = None
+                    session.cursors[source.id] = 0
+            assigned = any(
+                source.id in session.cursors for session in self._sessions.values()
+            )
+            source.playback._set_state(
+                PlaybackStatus.ACTIVE if assigned else PlaybackStatus.DEFERRED,
+                None if assigned else DeferredReason.NO_RESOLVED_ENDPOINT,
+            )
+
+    def _pump_locked(self) -> None:
+        now = time.perf_counter()
+        for endpoint, session in list(self._sessions.items()):
+            wanted = int((now - session.started_at + self._send_ahead) * SAMPLE_RATE)
+            while session.cursors and session.frames_sent < wanted:
+                frames = self._chunk_frames_locked(session)
+                if frames <= 0:
+                    break
+                data, finished = self._mix_locked(session, frames)
+                self._sink.stream_data_endpoint(endpoint, session.offset, data)
+                session.offset += len(data)
+                session.frames_sent += frames
+                for source_id in finished:
+                    source = self._sources.get(source_id)
+                    if source is not None:
+                        source.completed_endpoints.add(endpoint)
+                    session.cursors.pop(source_id, None)
+                    self._complete_if_unreferenced_locked(source_id)
+
+            if not session.cursors:
+                if session.empty_since is None:
+                    session.empty_since = now
+                elif now - session.empty_since >= SESSION_END_LINGER:
+                    self._sink.stream_end_endpoint(endpoint)
+                    self._record_end_locked(endpoint)
+                    self._sessions.pop(endpoint, None)
+
+    def _chunk_frames_locked(self, session: _EndpointSession) -> int:
+        maximum = 0
+        for source_id, cursor in session.cursors.items():
+            source = self._sources.get(source_id)
+            if source is None:
+                continue
+            if source.loop and source.frames:
+                return CHUNK_FRAMES
+            maximum = max(maximum, source.frames - cursor)
+        return min(CHUNK_FRAMES, max(0, maximum))
+
+    def _mix_locked(
+        self, session: _EndpointSession, frames: int
+    ) -> tuple[bytes, set[str]]:
+        mixed = [0.0] * (frames * CHANNELS)
+        finished: set[str] = set()
+        for source_id, initial_cursor in list(session.cursors.items()):
+            source = self._sources.get(source_id)
+            if source is None or source.frames == 0:
+                finished.add(source_id)
+                continue
+            left_gain, right_gain = _channel_gains(source.gain, source.pan)
+            cursor = initial_cursor
+            for frame in range(frames):
+                if cursor >= source.frames:
+                    if source.loop:
+                        cursor = 0
+                    else:
+                        finished.add(source_id)
+                        break
+                base = cursor * CHANNELS
+                mixed[frame * CHANNELS] += source.pcm[base] * left_gain
+                mixed[frame * CHANNELS + 1] += source.pcm[base + 1] * right_gain
+                cursor += 1
+            session.cursors[source_id] = cursor
+            if not source.loop and cursor >= source.frames:
+                finished.add(source_id)
+
+        samples = (_saturate_pcm16(value) for value in mixed)
+        return struct.pack(f"<{frames * CHANNELS}h", *samples), finished
+
+    def _remove_source_from_sessions_locked(self, source_id: str) -> None:
+        now = time.perf_counter()
+        for session in self._sessions.values():
+            session.cursors.pop(source_id, None)
+            if not session.cursors:
+                session.empty_since = session.empty_since or now
+
+    def _complete_if_unreferenced_locked(self, source_id: str) -> None:
+        if any(source_id in session.cursors for session in self._sessions.values()):
+            return
+        if source_id in self._sources:
+            source = self._sources.pop(source_id)
+            source.playback._set_state(PlaybackStatus.STOPPED)
+
+    def _set_source_property(self, source_id: str, name: str, value) -> None:
+        with self._lock:
+            source = self._sources.get(source_id)
+            if source is not None:
+                setattr(source, name, value)
+
+    def _record_end_locked(self, endpoint: StreamEndpoint) -> None:
+        ended_at = time.perf_counter()
+        self._last_end_at[("ip", endpoint.ip)] = ended_at
+        self._last_end_at[("address", endpoint.address)] = ended_at
+
+    def _restart_cooldown_locked(self, endpoint: StreamEndpoint) -> bool:
+        latest = max(
+            self._last_end_at.get(("ip", endpoint.ip), 0.0),
+            self._last_end_at.get(("address", endpoint.address), 0.0),
+        )
+        return time.perf_counter() - latest < SESSION_END_LINGER
+
+
+def _normalize_pcm16(pcm: bytes, *, sample_rate: int, channels: int) -> tuple[int, ...]:
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be positive")
+    if channels not in (1, 2):
+        raise ValueError("channels must be 1 or 2")
+    bytes_per_frame = channels * 2
+    if len(pcm) % bytes_per_frame:
+        raise ValueError("PCM16 data must contain complete frames")
+    if not pcm:
+        return ()
+    values = [item[0] for item in struct.iter_unpack("<h", pcm)]
+    input_frames = len(values) // channels
+    output_frames = max(1, round(input_frames * SAMPLE_RATE / sample_rate))
+    output: list[int] = []
+    for output_index in range(output_frames):
+        position = output_index * sample_rate / SAMPLE_RATE
+        left_index = min(input_frames - 1, int(math.floor(position)))
+        right_index = min(input_frames - 1, left_index + 1)
+        fraction = position - left_index
+        if channels == 1:
+            value = round(values[left_index] * (1.0 - fraction) + values[right_index] * fraction)
+            output.extend((value, value))
+        else:
+            for channel in range(CHANNELS):
+                a = values[left_index * CHANNELS + channel]
+                b = values[right_index * CHANNELS + channel]
+                output.append(round(a * (1.0 - fraction) + b * fraction))
+    return tuple(output)
+
+
+def _channel_gains(gain: float, pan: float) -> tuple[float, float]:
+    return (
+        gain * (1.0 if pan <= 0.0 else 1.0 - pan),
+        gain * (1.0 if pan >= 0.0 else 1.0 + pan),
+    )
+
+
+def _saturate_pcm16(value: float) -> int:
+    return max(-32768, min(32767, round(value)))
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))

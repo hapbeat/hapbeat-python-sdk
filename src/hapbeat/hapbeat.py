@@ -32,8 +32,8 @@ from typing import Optional, Union
 
 from . import protocol
 from .client import DEFAULT_BROADCAST, DEFAULT_PORT, UdpClient
-from .clip import ClipStreamer
 from .eventmap import EventDef, EventMap
+from .stream import StreamEndpoint, StreamHub, StreamPlayback
 from .wav import WavPcm, read_wav_pcm16
 
 logger = logging.getLogger("hapbeat")
@@ -47,6 +47,7 @@ class Device:
     name: str = ""
     address: str = ""
     firmware_version: str = ""
+    port: int = DEFAULT_PORT
     last_seen: float = field(default_factory=time.monotonic)
 
 
@@ -110,14 +111,12 @@ class Hapbeat:
             device_ttl if device_ttl is not None
             else max(5.0, keepalive_interval * 3.0)
         )
-        # Unicast destinations for the active stream session, snapshotted once
-        # in stream_begin (STREAM_DATA/END carry no target of their own).
-        # None = broadcast the session; [] = the snapshot matched nobody, so
-        # send nothing; non-empty = unicast to exactly these IPs.
-        self._stream_dests: Optional[list[str]] = None
-        # Clip streaming (level-2). The streamer calls this object's
-        # stream_begin/stream_data/stream_end (StreamSink protocol).
-        self._clip = ClipStreamer(self, send_ahead_sec=stream_send_ahead)
+        # One deep module owns all logical sources and endpoint wire sessions.
+        # STREAM_DATA/END have no target, so every session is exact-unicast to
+        # one PONG-reported endpoint; unresolved sources remain Deferred.
+        self._stream_hub = StreamHub(
+            self, self._stream_endpoints, send_ahead_sec=stream_send_ahead
+        )
         self._clip_cache: dict[str, WavPcm] = {}
 
     # ── Lifecycle ───────────────────────────────────────────────────
@@ -126,6 +125,7 @@ class Hapbeat:
         may both call it, so a second call while open is a no-op."""
         if self._opened:
             return self
+        self._stream_hub.open()
         self._opened = True
         self._client.add_pong_listener(self._on_pong)
         self._client.open()
@@ -137,7 +137,7 @@ class Hapbeat:
         if not self._opened:
             return
         self._opened = False
-        self._clip.stop()  # end any in-flight clip stream
+        self._stream_hub.close()
         # Tell the device this app is leaving so the OLED clears.
         if self.app_name:
             try:
@@ -225,7 +225,7 @@ class Hapbeat:
         target: Optional[str] = None,
         target_time_us: int = 0,
         pan: float = 0.0,
-    ) -> bool:
+    ) -> Union[StreamPlayback, bool]:
         """Play a haptic event by id. The EventMap decides the mode.
 
         - **command** event (manifest ``events``) → a PLAY instruction; the
@@ -237,9 +237,8 @@ class Hapbeat:
         gain (0..1); when omitted, the bound :class:`EventMap` supplies the
         per-event default (its manifest ``intensity``), else ``1.0``.
         ``pan`` is the left/right balance (-1 left, 0 centre, +1 right).
-        ``target_time_us`` and ``pan`` apply to command mode only — a clip
-        stream carries no pan field, so balance there is expressed by the
-        per-channel amplitude of the stereo PCM itself.
+        ``target_time_us`` applies to command mode only. ``pan`` applies to
+        both modes; clip-mode balance is mixed into the endpoint PCM.
         """
         ev = self.event_map.get(event_id) if self.event_map else None
         if gain is None:
@@ -248,7 +247,7 @@ class Hapbeat:
         target_eff = self._effective_target(ev, target)
 
         if ev is not None and ev.streaming:
-            return self.play_clip(event_id, gain, target=target_eff)
+            return self.play_clip(event_id, gain, target=target_eff, pan=pan)
 
         pkt = protocol.build_play(
             self._next_seq(),
@@ -261,11 +260,11 @@ class Hapbeat:
         return self._send_routed(pkt, target_eff)
 
     def stop(self, event_id: str, *, target: Optional[str] = None) -> bool:
-        """Stop one event id. Clip events end the active stream; command
-        events send a STOP."""
+        """Stop one event id. Clip events stop matching logical sources;
+        command events send a STOP."""
         ev = self.event_map.get(event_id) if self.event_map else None
         if ev is not None and ev.streaming:
-            self._clip.stop()
+            self._stream_hub.stop_key(event_id, target=target)
             return True
         target_eff = self._effective_target(ev, target)
         pkt = protocol.build_stop(self._next_seq(), event_id, target=target_eff)
@@ -273,7 +272,10 @@ class Hapbeat:
 
     def stop_all(self, *, target: Optional[str] = None) -> bool:
         """Stop every event on matching devices (and any active clip stream)."""
-        self._clip.stop()
+        if target is None:
+            self._stream_hub.stop_all()
+        else:
+            self._stream_hub.stop_target(target)
         target_eff = self._resolve_target(target)
         pkt = protocol.build_stop_all(self._next_seq(), target=target_eff)
         return self._send_routed(pkt, target_eff)
@@ -308,7 +310,9 @@ class Hapbeat:
         gain: Optional[float] = None,
         *,
         target: Optional[str] = None,
-    ) -> bool:
+        pan: float = 0.0,
+        loop: Optional[bool] = None,
+    ) -> Union[StreamPlayback, bool]:
         """Stream a clip-mode event's WAV to the device.
 
         Usually you call :meth:`play`, which routes clip events here. The WAV
@@ -323,14 +327,16 @@ class Hapbeat:
         wav = self._load_clip(event_id, ev)
         if wav is None:
             return False
-        self._clip.play(
+        return self._stream_hub.play_pcm(
             wav.data,
             sample_rate=wav.sample_rate,
             channels=wav.channels,
             gain=max(0.0, min(1.0, float(gain))),
+            pan=max(-1.0, min(1.0, float(pan))),
+            loop=ev.loop if loop is None else loop,
             target=self._effective_target(ev, target),
+            key=event_id,
         )
-        return True
 
     def play_clip_file(
         self,
@@ -338,21 +344,24 @@ class Hapbeat:
         gain: float = 1.0,
         *,
         target: Optional[str] = None,
-    ) -> bool:
+        pan: float = 0.0,
+        loop: bool = False,
+    ) -> Union[StreamPlayback, bool]:
         """Stream an arbitrary PCM16 WAV file (not from a manifest)."""
         try:
             wav = read_wav_pcm16(path)
         except (OSError, ValueError) as exc:
             logger.warning("cannot read clip %s: %s", path, exc)
             return False
-        self._clip.play(
+        return self._stream_hub.play_pcm(
             wav.data,
             sample_rate=wav.sample_rate,
             channels=wav.channels,
             gain=max(0.0, min(1.0, float(gain))),
+            pan=max(-1.0, min(1.0, float(pan))),
+            loop=loop,
             target=self._resolve_target(target),
         )
-        return True
 
     def stream_pcm(
         self,
@@ -361,16 +370,22 @@ class Hapbeat:
         sample_rate: int = 16000,
         channels: int = 1,
         gain: float = 1.0,
+        pan: float = 0.0,
+        loop: bool = False,
         target: Optional[str] = None,
-    ) -> None:
-        """Stream an ad-hoc PCM16 buffer (e.g. synthesized cues). ``channels=2``
-        with per-channel amplitude conveys L/R balance (a stream carries no pan
-        field of its own; ``play(..., pan=)`` is the command-mode equivalent)."""
-        self._clip.play(
+    ) -> StreamPlayback:
+        """Register an ad-hoc PCM16 source in the shared endpoint mixer.
+
+        The returned handle adjusts or stops only this source. Multiple calls
+        may run concurrently, including calls aimed at different targets.
+        """
+        return self._stream_hub.play_pcm(
             pcm,
             sample_rate=sample_rate,
             channels=max(1, channels),
             gain=max(0.0, min(1.0, float(gain))),
+            pan=max(-1.0, min(1.0, float(pan))),
+            loop=loop,
             target=self._resolve_target(target),
         )
 
@@ -413,54 +428,34 @@ class Hapbeat:
         self._clip_cache[event_id] = wav
         return wav
 
-    # ── StreamSink (called by ClipStreamer) ─────────────────────────
-    def _snapshot_stream_destinations(self, target: str) -> None:
-        """Pick the destinations for one stream session.
-
-        Only STREAM_BEGIN carries a target, so the choice is made once here and
-        reused for every STREAM_DATA/END of the session (also keeping the
-        destination set stable while the clip thread is running).
-
-        Unlike a one-shot command, a filtered-to-empty result means *send
-        nothing* rather than broadcast: a stream is hundreds of packets, and
-        blasting all of them at devices the target excluded would waste far
-        more airtime than a lost stream costs (the device just stays silent —
-        nothing gets stuck, unlike a lost STOP).
-        """
-        if not self.unicast:
-            self._stream_dests = None
-            return
-        alive = self._alive_devices()
-        if not alive:
-            self._stream_dests = None  # nobody known yet -> broadcast
-            return
-        self._stream_dests = [
-            d.ip for d in alive
-            if not d.address or protocol.address_matches(target, d.address)
+    # ── EndpointStreamSink (called only by StreamHub) ───────────────
+    def _stream_endpoints(self) -> list[StreamEndpoint]:
+        return [
+            StreamEndpoint(ip=device.ip, address=device.address, port=device.port)
+            for device in self._alive_devices()
+            if device.address
         ]
 
-    def _send_stream(self, packet: bytes) -> bool:
-        dests = self._stream_dests
-        if dests is None:
-            return self._client.send(packet)
-        if not dests:
-            return False  # snapshot matched no device — see _snapshot_stream_destinations
-        return self._client.send_many(packet, dests)
+    def stream_begin_endpoint(self, endpoint: StreamEndpoint) -> None:
+        packet = protocol.build_stream_begin(
+            self._next_seq(),
+            sample_rate=16000,
+            channels=2,
+            fmt=protocol.AUDIO_FORMAT_PCM16,
+            total_samples=0,
+            gain=1.0,
+            target=endpoint.address,
+        )
+        self._client.send(packet, endpoint.ip)
 
-    def stream_begin(self, *, sample_rate: int, channels: int,
-                     total_samples: int, gain: float, target: str) -> None:
-        self._snapshot_stream_destinations(target)
-        self._send_stream(protocol.build_stream_begin(
-            self._next_seq(), sample_rate=sample_rate, channels=channels,
-            fmt=protocol.AUDIO_FORMAT_PCM16, total_samples=total_samples,
-            gain=gain, target=target,
-        ))
+    def stream_data_endpoint(
+        self, endpoint: StreamEndpoint, offset: int, data: bytes
+    ) -> None:
+        packet = protocol.build_stream_data(self._next_seq(), offset, data)
+        self._client.send(packet, endpoint.ip)
 
-    def stream_data(self, offset: int, data: bytes) -> None:
-        self._send_stream(protocol.build_stream_data(self._next_seq(), offset, data))
-
-    def stream_end(self) -> None:
-        self._send_stream(protocol.build_stream_end(self._next_seq()))
+    def stream_end_endpoint(self, endpoint: StreamEndpoint) -> None:
+        self._client.send(protocol.build_stream_end(self._next_seq()), endpoint.ip)
 
     # ── Discovery ───────────────────────────────────────────────────
     def discover(self, timeout: float = 1.0, *, stop_early: bool = False) -> list[Device]:
@@ -505,6 +500,7 @@ class Hapbeat:
             dev.firmware_version = pong.get("firmware_version", dev.firmware_version)
             dev.last_seen = time.monotonic()
             self._devices[ip] = dev
+        self._stream_hub.reconcile()
 
     # ── Keep-alive thread ───────────────────────────────────────────
     def _start_keepalive(self) -> None:

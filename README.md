@@ -67,8 +67,10 @@ for dev in hb.discover(timeout=1.5):
 
 ### How packets are sent
 
-Commands and clip streams are **unicast** to every device that answered a PING,
-and broadcast only while no device is known. Wi-Fi APs hold broadcast frames
+Commands are unicast to devices that answered a PING and use broadcast only
+while no device is known. Clip streams are stricter: they start only on exact
+PONG-reported endpoints and remain `Deferred` while none matches; stream packets
+are never broadcast. Wi-Fi APs hold broadcast frames
 until their next DTIM beacon (100–300 ms) whenever any client on the AP is
 power-saving, which is heard as late haptics and stuttering streams; unicast is
 not batched that way. The 5-second keep-alive PING keeps that table current, so
@@ -148,19 +150,24 @@ my-app/
 import hapbeat
 hb = hapbeat.connect(app_name="MyApp", kit="kits/my-kit")
 hb.play("sample-kit.sine_100hz")     # command -> device plays its installed clip
-hb.play("rain.loop")      # clip    -> SDK streams stream-clips/<wav> over UDP
-hb.stop("rain.loop")      # ends the active stream
+rain = hb.play("rain.loop")  # clip -> returns a StreamPlayback
+rain.pan = -0.5
+rain.stop()                  # stops only this logical source
 ```
 
 You can also stream an ad-hoc PCM16 buffer (e.g. a synthesized stereo cue where
 L/R amplitude conveys direction):
 
 ```python
-hb.stream_pcm(pcm_bytes, sample_rate=16000, channels=2)
+left = hb.stream_pcm(pcm_bytes, sample_rate=16000, channels=2,
+                     target="player_1/left", loop=True)
+right = hb.stream_pcm(other_pcm, target="player_1/right", loop=True)
+left.gain = 0.5
 ```
 
-Author clips as **16 kHz mono PCM16** (the device plays at 16 kHz; the SDK does
-not resample). A full runnable example is in
+PCM16 input is normalized to **16 kHz stereo** inside the shared endpoint mixer.
+Sources aimed at one endpoint are mixed into one wire session; sources aimed at
+different endpoints run independently. A full runnable example is in
 [examples/clip_project/](examples/clip_project/).
 
 ## Generic OSC bridge

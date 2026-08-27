@@ -86,10 +86,12 @@ Keep the kit inside your project and load it with `connect(kit=...)`:
 ```python
 hb = hapbeat.connect(app_name="MyApp", kit="kits/my-kit")
 hb.play("sample-kit.sine_100hz")   # command
-hb.play("rain.loop")    # clip (streamed); hb.stop("rain.loop") ends it
+rain = hb.play("rain.loop")  # clip (streamed); returns StreamPlayback
+rain.stop()                  # stops this source without stopping siblings
 ```
 
-Author clips as 16 kHz mono PCM16. Full example:
+PCM16 clips are normalized to 16 kHz stereo and mixed per device endpoint. A
+clip remains Deferred until a matching PONG-reported endpoint exists. Full example:
 [examples/clip_project](https://github.com/hapbeat/hapbeat-python-sdk/tree/master/examples/clip_project).
 
 ## Next steps

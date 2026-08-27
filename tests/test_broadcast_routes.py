@@ -261,7 +261,9 @@ def test_discovery_warns_once_when_every_destination_fails(monkeypatch, caplog):
 def test_only_ping_and_connect_status_use_the_fan_out(fake_client):  # noqa: F811
     hb = hapbeat_mod.Hapbeat(app_name="Test", keepalive=False).open()
     try:
-        hb._devices["192.168.0.42"] = hapbeat_mod.Device(ip="192.168.0.42")
+        hb._devices["192.168.0.42"] = hapbeat_mod.Device(
+            ip="192.168.0.42", address="player_1/chest"
+        )
 
         hb.ping()
         hb.connect_status(connected=True)
@@ -271,10 +273,8 @@ def test_only_ping_and_connect_status_use_the_fan_out(fake_client):  # noqa: F81
         hb.play("sample-kit.sine_100hz")
         hb.stop("sample-kit.sine_100hz")
         hb.stop_all()
-        hb.stream_begin(sample_rate=16000, channels=1, total_samples=16,
-                        gain=1.0, target="")
-        hb.stream_data(0, b"\x00\x00")
-        hb.stream_end()
+        playback = hb.stream_pcm(b"\x00\x00" * 256, loop=True)
+        playback.stop()
 
         # Not one playback packet took the fan-out.
         assert hb._client.discovery_sent == []

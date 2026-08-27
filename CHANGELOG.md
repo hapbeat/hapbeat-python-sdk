@@ -5,6 +5,12 @@
 ## Unreleased
 
 ### 追加
+- WifiUdp streaming を `StreamHub` に統合した。複数の PCM / clip source を
+  同時登録でき、同じ device endpoint では 16 kHz stereo PCM16 に混合し、異なる
+  endpoint では独立した STREAM session を使用する。`stream_pcm` / clip API は
+  source 単位の `StreamPlayback`（status / gain / pan / loop / stop）を返す。
+- target 未解決時は `Deferred(NoResolvedEndpoint)` とし、STREAM packet を broadcast
+  しない。PONG 後に有限 source を先頭から開始する。
 - `play()` に `pan` 引数（-1 = 左 / 0 = 中央 / +1 = 右）を追加した。PLAY パケット
   末尾に f32 で常時付与する（contracts message-format.md §0x01 / DEC-055）。
   CLI `hapbeat play --pan`、OSC `/hapbeat/play` の第 5 引数からも指定できる。
@@ -138,8 +144,8 @@ Hapbeat 触覚デバイスを Wi-Fi UDP で駆動する Python SDK。コア機�
 ### command / clip 再生
 - `play(id)` が manifest を見て自動分岐します。**command**（デバイスが導入済みクリップを再生）
   と **clip**（SDK が WAV を UDP でストリーミング）。
-- `ClipStreamer` — ペーシングした STREAM_BEGIN/DATA/END（256 ms リング対応）、
-  セッション単位で単一ストリーム。`play_clip` / `play_clip_file` / `stream_pcm`
+- `StreamHub` — ペーシングした STREAM_BEGIN/DATA/END（256 ms リング対応）、
+  endpoint 単位の multi-stream mixing。`play_clip` / `play_clip_file` / `stream_pcm`
   （アドホック PCM。例: ステレオの方向手がかり）/ `preload_clips`。
 - 16 kHz モノラル PCM16 の WAV（実行時リサンプルなし。16 kHz 以外は警告）。
 
@@ -157,5 +163,4 @@ Hapbeat 触覚デバイスを Wi-Fi UDP で駆動する Python SDK。コア機�
   `psychophysics_experiment`、`breathing_pacer`、`metronome`、`haptic_pad`、
   `task_notifier`、`morse_text` — いずれも単一ファイル・標準ライブラリのみ。
 
-未実装（level-2）: clip のリアルタイム gain/pan バインドとマルチソースミキシング、
-mDNS 検出、高レベルなトリガー抽象化。
+未実装（level-2）: live push / mic capture、mDNS 検出、高レベルなトリガー抽象化。

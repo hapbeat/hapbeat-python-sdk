@@ -48,15 +48,17 @@ import hapbeat
 
 with hapbeat.connect(app_name="MyApp") as hb:   # context manager closes cleanly
     hb.play("sample-kit.sine_100hz", gain=0.5)             # gain 0..1; omit to use EventMap default
-    hb.play("sample-kit.sine_100hz", pan=0.8)              # pan -1..+1 (left..right); command mode only
+    hb.play("sample-kit.sine_100hz", pan=0.8)              # pan -1..+1 (left..right); command or clip
 ```
 
 ## Communication model
 
 - Wi-Fi UDP; no ACK ("late is worse than dropped"). Devices self-filter by
   target, so the SDK's routing can never make the wrong device fire.
-- PLAY / STOP / STOP_ALL and clip streams are **unicast** to devices that
-  answered a recent PING; broadcast is the fallback while none is known.
+- PLAY / STOP / STOP_ALL are **unicast** to devices that answered a recent
+  PING; broadcast is the command fallback while none is known. Clip streams
+  require an exact PONG-reported endpoint and remain Deferred otherwise;
+  STREAM_BEGIN / DATA / END are never broadcast.
   APs delay broadcast frames up to one DTIM beacon (100–300 ms) whenever any
   client on the AP is power-saving. `connect(unicast=False)` forces broadcast
   (better when many devices must fire in lockstep); `device_ttl` sets how long
@@ -147,14 +149,14 @@ bind_port=0, kit=None, haptics=None, clip_base=None, stream_send_ahead=0.15,
 unicast=True, device_ttl=None) -> Hapbeat`
 
 `Hapbeat`:
-- `play(event_id, gain=None, *, target=None, target_time_us=0) -> bool`
+- `play(event_id, gain=None, *, target=None, target_time_us=0, pan=0) -> bool | StreamPlayback`
 - `stop(event_id, *, target=None) -> bool`
 - `stop_all(*, target=None) -> bool`
 - `ping() -> bool`
 - `connect_status(*, connected=True) -> bool`
-- `play_clip(event_id, gain=None, *, target=None) -> bool`
-- `play_clip_file(path, gain=1.0, *, target=None) -> bool`
-- `stream_pcm(pcm: bytes, *, sample_rate=16000, channels=1, gain=1.0, target=None)`
+- `play_clip(event_id, gain=None, *, target=None, pan=0, loop=None) -> StreamPlayback | False`
+- `play_clip_file(path, gain=1.0, *, target=None, pan=0, loop=False) -> StreamPlayback | False`
+- `stream_pcm(pcm: bytes, *, sample_rate=16000, channels=1, gain=1.0, pan=0, loop=False, target=None) -> StreamPlayback`
 - `preload_clips()`
 - `discover(timeout=1.0) -> list[Device]`, `devices` (property)
 - `open()` / `close()` / context manager
@@ -176,12 +178,14 @@ With `--haptics`, OSC events route command/clip and pick up per-event targets, s
 a sender only needs the event id. The bridge listen port (default 7702) is what
 the phone targets — not the device's UDP 7700.
 
-## clip streaming requirements
+## clip streaming model
 
-- WAVs must be **16 kHz mono PCM16**; the SDK does not resample (non-16 kHz warns).
-- One stream at a time (session-level); a new clip cancels the previous.
-- `gain` is folded into STREAM_BEGIN.gain only (applied once on the device — no
-  double-apply); the PCM bytes are sent unchanged.
+- PCM16 sources are normalized to **16 kHz stereo**. Multiple sources may run
+  concurrently; matching sources are mixed into one wire session per endpoint.
+- `StreamPlayback` owns source-local status / deferred reason / gain / pan /
+  loop / idempotent stop. Stopping one source does not stop siblings.
+- Unknown targets are `Deferred(NoResolvedEndpoint)` until discovery resolves
+  them. No STREAM packet uses broadcast.
 
 ## Best practices
 
@@ -206,9 +210,9 @@ the phone targets — not the device's UDP 7700.
 
 ## Not implemented
 
-Realtime gain/pan modulation during a clip, multi-source mixing, live (mic)
-capture streaming, and mDNS discovery are not built. Discovery is broadcast
-PING/PONG only.
+Live push/microphone capture and mDNS discovery are not built. Finite/looping
+PCM sources, realtime gain/pan, endpoint mixing, and multi-target streaming are
+implemented. Discovery is broadcast PING/PONG only.
 
 ## Examples to copy from
 

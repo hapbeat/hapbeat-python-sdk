@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from hapbeat import protocol
+from hapbeat import PlaybackStatus, protocol
 from hapbeat import hapbeat as hapbeat_mod
 
 from .test_hapbeat import fake_client  # noqa: F401 (pytest fixture)
@@ -156,15 +156,19 @@ def test_ping_and_connect_status_stay_broadcast(fake_client):  # noqa: F811
 
 
 # ── Stream sessions ────────────────────────────────────────────────
-def test_stream_snapshot_is_reused_for_data_and_end(fake_client):  # noqa: F811
+def test_stream_uses_one_exact_endpoint_for_begin_data_and_end(fake_client):  # noqa: F811
     hb = hapbeat_mod.Hapbeat(keepalive=False).open()
-    _seen(hb, "192.168.1.10")
+    _seen(hb, "192.168.1.10", "player_1/pos_neck")
     hb._client.sent.clear()
-    hb.stream_begin(sample_rate=16000, channels=1, total_samples=100,
-                    gain=1.0, target="")
-    hb.stream_data(0, b"\x00\x00")
-    hb.stream_end()
-    assert [addr for _, addr in hb._client.sent] == ["192.168.1.10"] * 3
+    playback = hb.stream_pcm(b"\x00\x00" * 1024, target="", loop=True)
+    deadline = time.monotonic() + 1.0
+    while len(hb._client.sent) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    playback.stop()
+    while len(hb._client.sent) < 3 and time.monotonic() < deadline + 0.5:
+        time.sleep(0.01)
+    assert len(hb._client.sent) >= 3
+    assert {addr for _, addr in hb._client.sent} == {"192.168.1.10"}
 
 
 def test_stream_skips_when_target_matches_nobody(fake_client):  # noqa: F811
@@ -174,16 +178,14 @@ def test_stream_skips_when_target_matches_nobody(fake_client):  # noqa: F811
     hb = hapbeat_mod.Hapbeat(keepalive=False).open()
     _seen(hb, "192.168.1.10", "player_1/pos_neck/group_1")
     hb._client.sent.clear()
-    hb.stream_begin(sample_rate=16000, channels=1, total_samples=100,
-                    gain=1.0, target="player_5")
-    hb.stream_data(0, b"\x00\x00")
+    playback = hb.stream_pcm(b"\x00\x00" * 100, target="player_5")
+    assert playback.status is PlaybackStatus.DEFERRED
     assert hb._client.sent == []
 
 
-def test_stream_broadcasts_when_no_device_is_known(fake_client):  # noqa: F811
+def test_stream_defers_without_known_device_and_never_broadcasts(fake_client):  # noqa: F811
     hb = hapbeat_mod.Hapbeat(keepalive=False).open()
     hb._client.sent.clear()
-    hb.stream_begin(sample_rate=16000, channels=1, total_samples=100,
-                    gain=1.0, target="")
-    hb.stream_data(0, b"\x00\x00")
-    assert [addr for _, addr in hb._client.sent] == [None, None]
+    playback = hb.stream_pcm(b"\x00\x00" * 100, target="")
+    assert playback.status is PlaybackStatus.DEFERRED
+    assert hb._client.sent == []
