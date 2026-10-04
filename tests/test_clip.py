@@ -23,6 +23,8 @@ from hapbeat.stream import (
 )
 from hapbeat.wav import read_wav_pcm16
 
+from .pong_helpers import reply
+
 
 # ── helpers ─────────────────────────────────────────────────────────
 def write_wav(path: Path, frames: int = 400, channels: int = 1,
@@ -61,6 +63,9 @@ class FakeUdpClient:
     def send(self, pkt, addr=None):
         self.sent.append(pkt)
         self.destinations.append(addr)
+        return True
+
+    def send_discovery(self, pkt):
         return True
 
     def types(self) -> list[int]:
@@ -331,7 +336,7 @@ def test_play_command_sends_play(tmp_path, fake_client):
 def test_play_clip_streams(tmp_path, fake_client):
     em = EventMap.from_kit(make_kit(tmp_path))
     with hapbeat.connect(event_map=em, keepalive=False, stream_send_ahead=0.0) as hb:
-        hb._on_pong({"address": "player_1/chest"}, "192.0.2.10")
+        reply(hb, "192.0.2.10", "player_1/chest")  # pre-v2 firmware: v1 stream
         before = len(hb._client.sent)
         playback = hb.play("rumble.long")
         # STREAM_BEGIN is sent synchronously by play_clip
@@ -346,7 +351,7 @@ def test_play_clip_streams(tmp_path, fake_client):
 def test_stop_clip_ends_stream(tmp_path, fake_client):
     em = EventMap.from_kit(make_kit(tmp_path))
     with hapbeat.connect(event_map=em, keepalive=False, stream_send_ahead=10.0) as hb:
-        hb._on_pong({"address": "player_1/chest"}, "192.0.2.10")
+        reply(hb, "192.0.2.10", "player_1/chest")  # pre-v2 firmware: v1 stream
         hb.play("rumble.long")
         before = len(hb._client.sent)
         hb.stop("rumble.long")          # should force STREAM_END

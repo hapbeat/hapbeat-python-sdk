@@ -24,6 +24,7 @@ or as a context manager::
 from __future__ import annotations
 
 import logging
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
@@ -33,7 +34,23 @@ from typing import Optional, Union
 from . import protocol
 from .client import DEFAULT_BROADCAST, DEFAULT_PORT, UdpClient
 from .eventmap import EventDef, EventMap
-from .stream import StreamEndpoint, StreamHub, StreamPlayback
+from .stream import (
+    LEGACY_STREAM_MODE,
+    EndpointStreamMode,
+    StreamEndpoint,
+    StreamHub,
+    StreamPlayback,
+)
+from .stream_lease import (
+    PENDING_PING_MAX_AGE,
+    V2_LEASE_REFRESH_INTERVAL,
+    EndpointClass,
+    EndpointLeaseState,
+    PendingPing,
+    PongLeaseDecision,
+    StreamSessionIdentity,
+    evaluate_pong_lease,
+)
 from .wav import WavPcm, read_wav_pcm16
 
 logger = logging.getLogger("hapbeat")
@@ -53,6 +70,14 @@ class Device:
 
 def _now_us() -> int:
     return int(time.time() * 1_000_000)
+
+
+def _new_client_incarnation() -> int:
+    """A fresh nonzero uint64 (stream-session-v2.md client_incarnation)."""
+    while True:
+        value = secrets.randbits(64)
+        if value:
+            return value
 
 
 class Hapbeat:
@@ -94,6 +119,13 @@ class Hapbeat:
         self._seq_lock = threading.Lock()
         self._devices: dict[str, Device] = {}
         self._devices_lock = threading.Lock()
+        # Stream session v2 (contracts stream-session-v2.md), all guarded by
+        # _devices_lock. A fresh incarnation per open(); each device IP's
+        # class / lease comes only from matched replies to our extended PING.
+        self._client_incarnation = 0
+        self._pending_pings: dict[int, PendingPing] = {}
+        self._last_ping_timestamp_us = 0
+        self._stream_states: dict[str, EndpointLeaseState] = {}
         self._keepalive = keepalive
         self._keepalive_interval = keepalive_interval
         self._keepalive_stop: Optional[threading.Event] = None
@@ -115,7 +147,10 @@ class Hapbeat:
         # STREAM_DATA/END have no target, so every session is exact-unicast to
         # one PONG-reported endpoint; unresolved sources remain Deferred.
         self._stream_hub = StreamHub(
-            self, self._stream_endpoints, send_ahead_sec=stream_send_ahead
+            self,
+            self._stream_endpoints,
+            send_ahead_sec=stream_send_ahead,
+            mode_provider=self._stream_mode,
         )
         self._clip_cache: dict[str, WavPcm] = {}
 
@@ -125,6 +160,12 @@ class Hapbeat:
         may both call it, so a second call while open is a no-op."""
         if self._opened:
             return self
+        # A (re)connect is an explicit stream-ownership (re)acquisition: a new
+        # incarnation, no outstanding requests of the old one. v2 states of the
+        # old incarnation stop being usable; legacy devices keep their class.
+        with self._devices_lock:
+            self._client_incarnation = _new_client_incarnation()
+            self._pending_pings.clear()
         self._stream_hub.open()
         self._opened = True
         self._client.add_pong_listener(self._on_pong)
@@ -286,9 +327,31 @@ class Hapbeat:
         Goes out on every local subnet until a device answers — this is what
         finds a Hapbeat that the limited broadcast cannot reach on a multi-homed
         host. Safe to duplicate: a device answers each PING independently.
+
+        It is the extended (16-byte) PING of stream-session-v2.md: its matched
+        replies classify each device (v2 lease or legacy firmware) for clip
+        streaming.
         """
+        seq = self._next_seq()
+        with self._devices_lock:
+            if self._client_incarnation == 0:
+                self._client_incarnation = _new_client_incarnation()
+            # strictly increasing: class / lease adoption is ordered by the
+            # echoed timestamp, and two immediate PINGs may read the same clock
+            timestamp_us = max(_now_us(), self._last_ping_timestamp_us + 1)
+            self._last_ping_timestamp_us = timestamp_us
+            now = time.monotonic()
+            self._pending_pings = {
+                pending_seq: pending
+                for pending_seq, pending in self._pending_pings.items()
+                if now - pending.sent_at <= PENDING_PING_MAX_AGE
+            }
+            self._pending_pings[seq] = PendingPing(
+                timestamp_us, self._client_incarnation, now
+            )
+            incarnation = self._client_incarnation
         return self._client.send_discovery(
-            protocol.build_ping(self._next_seq(), _now_us()))
+            protocol.build_ping(seq, timestamp_us, incarnation))
 
     def connect_status(self, *, connected: bool = True) -> bool:
         """Announce connection state so the device OLED shows the app name."""
@@ -436,6 +499,20 @@ class Hapbeat:
             if device.address
         ]
 
+    def _stream_mode(self, endpoint: StreamEndpoint) -> Optional[EndpointStreamMode]:
+        """Legacy, v2 under its usable lease, or None (unknown class, invalid
+        or superseded lease, lease of an old incarnation): sources defer."""
+        with self._devices_lock:
+            state = self._stream_states.get(endpoint.ip)
+            incarnation = self._client_incarnation
+        if state is None:
+            return None
+        if state.endpoint_class is EndpointClass.LEGACY:
+            return LEGACY_STREAM_MODE
+        lease = state.usable_v2_lease(incarnation)
+        return EndpointStreamMode(lease) if lease is not None else None
+
+    # v1 stream: pre-v2 firmware only (exact unicast, END without payload)
     def stream_begin_endpoint(self, endpoint: StreamEndpoint) -> None:
         packet = protocol.build_stream_begin(
             self._next_seq(),
@@ -456,6 +533,49 @@ class Hapbeat:
 
     def stream_end_endpoint(self, endpoint: StreamEndpoint) -> None:
         self._client.send(protocol.build_stream_end(self._next_seq()), endpoint.ip)
+
+    # stream session v2: envelope on every packet
+    def stream_begin_v2(
+        self, endpoint: StreamEndpoint, identity: StreamSessionIdentity
+    ) -> None:
+        packet = protocol.build_stream_begin_v2(
+            self._next_seq(),
+            identity.lease.boot_id,
+            identity.lease.ticket,
+            identity.generation,
+            sample_rate=16000,
+            channels=2,
+            fmt=protocol.AUDIO_FORMAT_PCM16,
+            total_samples=0,
+            gain=1.0,
+            target=endpoint.address,
+        )
+        self._client.send(packet, endpoint.ip)
+
+    def stream_data_v2(
+        self, endpoint: StreamEndpoint, identity: StreamSessionIdentity,
+        offset: int, data: bytes,
+    ) -> None:
+        packet = protocol.build_stream_data_v2(
+            self._next_seq(),
+            identity.lease.boot_id,
+            identity.lease.ticket,
+            identity.generation,
+            offset,
+            data,
+        )
+        self._client.send(packet, endpoint.ip)
+
+    def stream_end_v2(
+        self, endpoint: StreamEndpoint, identity: StreamSessionIdentity
+    ) -> None:
+        packet = protocol.build_stream_end_v2(
+            self._next_seq(),
+            identity.lease.boot_id,
+            identity.lease.ticket,
+            identity.generation,
+        )
+        self._client.send(packet, endpoint.ip)
 
     # ── Discovery ───────────────────────────────────────────────────
     def discover(self, timeout: float = 1.0, *, stop_early: bool = False) -> list[Device]:
@@ -494,13 +614,44 @@ class Hapbeat:
 
     def _on_pong(self, pong: dict, ip: str) -> None:
         with self._devices_lock:
+            previous = self._stream_states.get(ip)
+            decision, state = evaluate_pong_lease(
+                pong, self._pending_pings, self._client_incarnation, previous
+            )
+            if decision is PongLeaseDecision.DISCARD:
+                # a reply for a retired request / old incarnation: must not roll
+                # the device's address or liveness back either
+                return
+            if decision is PongLeaseDecision.ACCEPT:
+                self._stream_states[ip] = state
             dev = self._devices.get(ip) or Device(ip=ip)
             dev.name = pong.get("device_name", dev.name)
             dev.address = pong.get("address", dev.address)
             dev.firmware_version = pong.get("firmware_version", dev.firmware_version)
             dev.last_seen = time.monotonic()
             self._devices[ip] = dev
+        if decision is PongLeaseDecision.ACCEPT:
+            self._log_stream_state_change(ip, previous, state)
         self._stream_hub.reconcile()
+
+    @staticmethod
+    def _log_stream_state_change(
+        ip: str,
+        previous: Optional[EndpointLeaseState],
+        state: EndpointLeaseState,
+    ) -> None:
+        if previous is None or previous.endpoint_class is not state.endpoint_class:
+            logger.info(
+                "stream receiver %s classified as %s", ip,
+                "stream session v2" if state.endpoint_class is EndpointClass.V2
+                else "legacy (pre-v2 firmware)",
+            )
+        if state.lease_superseded and not (previous and previous.lease_superseded):
+            logger.warning(
+                "stream lease at %s was superseded by another writer; streams "
+                "to it are deferred. Reconnect (close() then open()) after the "
+                "other writer has stopped.", ip,
+            )
 
     # ── Keep-alive thread ───────────────────────────────────────────
     def _start_keepalive(self) -> None:
@@ -518,7 +669,7 @@ class Hapbeat:
             self.connect_status(connected=True)
 
         def loop(stop: threading.Event) -> None:
-            while not stop.wait(self._keepalive_interval):
+            while not stop.wait(self._keepalive_wait()):
                 self.ping()
                 if self.app_name:
                     self.connect_status(connected=True)
@@ -528,6 +679,18 @@ class Hapbeat:
             name="hapbeat-keepalive", daemon=True,
         )
         self._keepalive_thread.start()
+
+    def _keepalive_wait(self) -> float:
+        """The keep-alive interval, capped while any device streams v2: its
+        device lease expires after 15 s without PING."""
+        with self._devices_lock:
+            has_v2 = any(
+                state.endpoint_class is EndpointClass.V2
+                for state in self._stream_states.values()
+            )
+        if has_v2:
+            return min(self._keepalive_interval, V2_LEASE_REFRESH_INTERVAL)
+        return self._keepalive_interval
 
     def _stop_keepalive(self) -> None:
         if self._keepalive_stop is not None:

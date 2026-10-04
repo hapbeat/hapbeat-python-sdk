@@ -16,6 +16,7 @@ import pytest
 from hapbeat import PlaybackStatus, protocol
 from hapbeat import hapbeat as hapbeat_mod
 
+from .pong_helpers import reply
 from .test_hapbeat import fake_client  # noqa: F401 (pytest fixture)
 
 
@@ -158,7 +159,7 @@ def test_ping_and_connect_status_stay_broadcast(fake_client):  # noqa: F811
 # ── Stream sessions ────────────────────────────────────────────────
 def test_stream_uses_one_exact_endpoint_for_begin_data_and_end(fake_client):  # noqa: F811
     hb = hapbeat_mod.Hapbeat(keepalive=False).open()
-    _seen(hb, "192.168.1.10", "player_1/pos_neck")
+    reply(hb, "192.168.1.10", "player_1/pos_neck", lease=(0xB007, 3))
     hb._client.sent.clear()
     playback = hb.stream_pcm(b"\x00\x00" * 1024, target="", loop=True)
     deadline = time.monotonic() + 1.0

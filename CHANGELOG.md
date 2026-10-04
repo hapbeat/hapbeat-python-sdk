@@ -14,13 +14,23 @@
 - `play()` に `pan` 引数（-1 = 左 / 0 = 中央 / +1 = 右）を追加した。PLAY パケット
   末尾に f32 で常時付与する（contracts message-format.md §0x01 / DEC-055）。
   CLI `hapbeat play --pan`、OSC `/hapbeat/play` の第 5 引数からも指定できる。
+- WifiUdp stream session v2（contracts stream-session-v2.md / DEC-074・075・081）に対応した。
+  探索・keep-alive の PING を 16 byte の拡張 PING（client incarnation 付き）にし、
+  その照合済み直接応答で機器ごとに v2 / 旧ファームを判定する。v2 機器には
+  device 発行の lease と generation を BEGIN/DATA/END に付け、END 直後でも次の
+  session を待たずに開始する（300 ms の END→BEGIN 待ちを撤廃）。旧ファームの機器には
+  従来の v1 stream で送り、300 ms guard はその機器だけに掛ける。判定前・lease 無効・
+  superseded の機器への stream は Deferred のまま送らない（superseded は close()→open()
+  で再取得）。判定・lease が変わった session は旧形式・旧 identity で END してから新形式で
+  BEGIN する。
 
 ### 修正
 - `StreamHub` の mix: source の gain / pan を変えたとき、256 frame chunk の境界で段差が
   出ていた（zipper）。前回値から新しい値へ chunk 内で sample ごとに線形補間する。
 - 複数 source の和がフルスケールを超えると hard clamp で歪んでいた。超えたときだけ
   0.9 FS へ gain を下げる limiter（chunk 内で補間、約 0.3 s で復帰）と、0.95 FS 以上の
-  soft knee に置き換えた。フルスケール以内の和はそのまま通す。
+  soft knee に置き換えた。フルスケール以内の和は limiter が戻りきっていれば bit 単位で
+  そのまま通す（0.95〜1.0 FS の block にも knee を掛けない。contracts §5.8）。
 - 再サンプリング不要な PCM（16 kHz）の正規化が sample ごとの Python ループで、8.5 s の
   stereo で約 210 ms かかり GIL を握っていた（連続した `stream_pcm` の開始遅延・mixer の
   送出遅れ）。`array` によるコピーにして 5 ms 程度にした（結果は同一）。

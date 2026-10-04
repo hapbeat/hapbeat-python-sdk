@@ -21,6 +21,9 @@ from typing import Optional
 # ── Header constants ────────────────────────────────────────────────
 MAGIC = 0x4842  # ASCII "HB"
 VERSION = 0x01
+# STREAM_BEGIN/DATA/END to stream-session-v2 receivers carry header version 2
+# (contracts stream-session-v2.md); every other command stays version 1.
+STREAM_VERSION = 0x02
 HEADER_SIZE = 8
 MAX_PACKET_SIZE = 512          # command packets
 MAX_STREAM_PACKET_SIZE = 1472  # 1500 MTU - 20 IP - 8 UDP
@@ -43,19 +46,34 @@ CMD_STREAM_END = 0x32
 CMD_PONG = 0x11
 CMD_ERROR = 0xFF
 
+# ── Stream session v2 (contracts stream-session-v2.md) ──────────────
+STREAM_ENVELOPE_SIZE = 16  # device_boot_id(u64) lease_ticket(u32) generation(u32)
+STREAM_LEASE_TAIL_MARKER = b"HBS2"
+STREAM_LEASE_TAIL_SIZE = 32
+STREAM_LEASE_TAIL_VERSION = 1
+STREAM_LEASE_FLAG_VALID = 0x01
+STREAM_LEASE_FLAG_SUPERSEDED = 0x02
+
+# PONG ``lease_tail``: how the bytes after volume_wiper classify
+LEASE_TAIL_ABSENT = "absent"        # no HBS2 marker (pre-v2 firmware when matched)
+LEASE_TAIL_VALID = "valid"          # well-formed 32-byte HBS2 tail
+LEASE_TAIL_MALFORMED = "malformed"  # HBS2 marker, wrong length/version/reserved/flags
+
 # ── Audio formats (streaming) ───────────────────────────────────────
 AUDIO_FORMAT_PCM16 = 0
 AUDIO_FORMAT_IMA_ADPCM = 1
 
 
 # ── Header ──────────────────────────────────────────────────────────
-def build_header(command_type: int, seq: int, payload_length: int) -> bytes:
+def build_header(
+    command_type: int, seq: int, payload_length: int, version: int = VERSION
+) -> bytes:
     """Build the 8-byte common header (little-endian).
 
     Layout: magic(u16) version(u8) command_type(u8) seq(u16) payload_length(u16)
     """
     return struct.pack(
-        "<HBBHH", MAGIC, VERSION, command_type, seq & 0xFFFF, payload_length
+        "<HBBHH", MAGIC, version, command_type, seq & 0xFFFF, payload_length
     )
 
 
@@ -137,9 +155,21 @@ def build_stop_all(seq: int, *, target: str = "") -> bytes:
     return build_packet(CMD_STOP_ALL, seq, payload)
 
 
-def build_ping(seq: int, timestamp_us: int) -> bytes:
-    """PING (0x10). Payload: timestamp(i64, microseconds)."""
-    return build_packet(CMD_PING, seq, struct.pack("<q", int(timestamp_us)))
+def build_ping(
+    seq: int, timestamp_us: int, client_incarnation: Optional[int] = None
+) -> bytes:
+    """PING (0x10). Payload: timestamp(i64, microseconds).
+
+    With ``client_incarnation`` (nonzero u64) this is the 16-byte extended PING
+    of stream-session-v2.md: v2 receivers answer with an HBS2 lease tail,
+    pre-v2 firmware ignores the extra bytes and answers an ordinary PONG.
+    """
+    payload = struct.pack("<q", int(timestamp_us))
+    if client_incarnation is not None:
+        if not 0 < client_incarnation <= 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("client_incarnation must be a nonzero uint64")
+        payload += struct.pack("<Q", client_incarnation)
+    return build_packet(CMD_PING, seq, payload)
 
 
 def build_connect_status(
@@ -166,6 +196,35 @@ def build_connect_status(
 
 
 # ── Streaming builders (clip-mode playback) ─────────────────────────
+#
+# v1 (``build_stream_*``) is for pre-v2 firmware only: header version 1, no
+# envelope, END without payload (contracts message-format.md "v1 stream").
+# v2 (``build_stream_*_v2``) starts every payload with the 16-byte
+# device_boot_id / lease_ticket / generation envelope, header version 2.
+def _stream_begin_body(
+    sample_rate: int, channels: int, fmt: int, total_samples: int,
+    gain: float, target: str,
+) -> bytes:
+    body = struct.pack(
+        "<HBBIf", sample_rate, channels, fmt, total_samples, float(gain)
+    )
+    if target:
+        body += target.encode("utf-8") + b"\x00"
+    return body
+
+
+def _build_stream_packet(
+    command_type: int, seq: int, payload: bytes, version: int
+) -> bytes:
+    """Stream packets use the larger MTU-safe size cap."""
+    total = HEADER_SIZE + len(payload)
+    if total > MAX_STREAM_PACKET_SIZE:
+        raise ValueError(
+            f"stream packet {total} exceeds MTU cap {MAX_STREAM_PACKET_SIZE}"
+        )
+    return build_header(command_type, seq, len(payload), version) + payload
+
+
 def build_stream_begin(
     seq: int,
     *,
@@ -176,33 +235,76 @@ def build_stream_begin(
     gain: float = 1.0,
     target: str = "",
 ) -> bytes:
-    """STREAM_BEGIN (0x30).
+    """STREAM_BEGIN (0x30), v1 (pre-v2 firmware).
 
     Default format is PCM16 — clip streaming sends uncompressed 16-bit PCM
     (ADPCM is reserved but not produced by the SDK).
     """
-    payload = struct.pack(
-        "<HBBIf", sample_rate, channels, fmt, total_samples, float(gain)
+    payload = _stream_begin_body(
+        sample_rate, channels, fmt, total_samples, gain, target
     )
-    if target:
-        payload += target.encode("utf-8") + b"\x00"
     return build_packet(CMD_STREAM_BEGIN, seq, payload)
 
 
 def build_stream_data(seq: int, offset: int, data: bytes) -> bytes:
-    """STREAM_DATA (0x31). Uses the larger MTU-safe size cap."""
+    """STREAM_DATA (0x31), v1. Uses the larger MTU-safe size cap."""
     payload = struct.pack("<I", offset) + data
-    total = HEADER_SIZE + len(payload)
-    if total > MAX_STREAM_PACKET_SIZE:
-        raise ValueError(
-            f"stream packet {total} exceeds MTU cap {MAX_STREAM_PACKET_SIZE}"
-        )
-    return build_header(CMD_STREAM_DATA, seq, len(payload)) + payload
+    return _build_stream_packet(CMD_STREAM_DATA, seq, payload, VERSION)
 
 
 def build_stream_end(seq: int) -> bytes:
-    """STREAM_END (0x32). No payload."""
+    """STREAM_END (0x32), v1. No payload."""
     return build_packet(CMD_STREAM_END, seq, b"")
+
+
+def build_stream_envelope(boot_id: int, lease_ticket: int, generation: int) -> bytes:
+    """The 16-byte v2 stream envelope. Every field must be nonzero."""
+    if not 0 < boot_id <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("device_boot_id must be a nonzero uint64")
+    if not 0 < lease_ticket <= 0xFFFFFFFF:
+        raise ValueError("lease_ticket must be a nonzero uint32")
+    if not 0 < generation <= 0xFFFFFFFF:
+        raise ValueError("generation must be a nonzero uint32")
+    return struct.pack("<QII", boot_id, lease_ticket, generation)
+
+
+def build_stream_begin_v2(
+    seq: int,
+    boot_id: int,
+    lease_ticket: int,
+    generation: int,
+    *,
+    sample_rate: int = 16000,
+    channels: int = 1,
+    fmt: int = AUDIO_FORMAT_PCM16,
+    total_samples: int = 0,
+    gain: float = 1.0,
+    target: str = "",
+) -> bytes:
+    """STREAM_BEGIN (0x30), v2: envelope + the v1 BEGIN body."""
+    payload = build_stream_envelope(boot_id, lease_ticket, generation)
+    payload += _stream_begin_body(
+        sample_rate, channels, fmt, total_samples, gain, target
+    )
+    return _build_stream_packet(CMD_STREAM_BEGIN, seq, payload, STREAM_VERSION)
+
+
+def build_stream_data_v2(
+    seq: int, boot_id: int, lease_ticket: int, generation: int,
+    offset: int, data: bytes,
+) -> bytes:
+    """STREAM_DATA (0x31), v2: envelope + byte offset(u32) + audio."""
+    payload = build_stream_envelope(boot_id, lease_ticket, generation)
+    payload += struct.pack("<I", offset & 0xFFFFFFFF) + data
+    return _build_stream_packet(CMD_STREAM_DATA, seq, payload, STREAM_VERSION)
+
+
+def build_stream_end_v2(
+    seq: int, boot_id: int, lease_ticket: int, generation: int
+) -> bytes:
+    """STREAM_END (0x32), v2: exactly the envelope, no body."""
+    payload = build_stream_envelope(boot_id, lease_ticket, generation)
+    return _build_stream_packet(CMD_STREAM_END, seq, payload, STREAM_VERSION)
 
 
 # ── Device addressing ───────────────────────────────────────────────
@@ -258,12 +360,44 @@ def _read_cstr(buf: bytes) -> tuple[str, bytes]:
     return buf[:idx].decode("utf-8", errors="replace"), buf[idx + 1:]
 
 
+def _classify_lease_tail(tail: bytes, out: dict) -> None:
+    """Classify the bytes after volume_wiper (stream-session-v2.md "Legacy
+    receiver fallback"): no HBS2 marker -> absent; a marker (or a truncated
+    prefix of one) with a wrong length / version / reserved / flags ->
+    malformed; otherwise the valid 32-byte lease tail."""
+    head = tail[:4]
+    if not head or head != STREAM_LEASE_TAIL_MARKER[: len(head)]:
+        out["lease_tail"] = LEASE_TAIL_ABSENT
+        return
+    known_flags = STREAM_LEASE_FLAG_VALID | STREAM_LEASE_FLAG_SUPERSEDED
+    if (
+        len(tail) != STREAM_LEASE_TAIL_SIZE
+        or tail[4] != STREAM_LEASE_TAIL_VERSION
+        or tail[5] & ~known_flags
+        or struct.unpack_from("<H", tail, 6)[0] != 0
+    ):
+        out["lease_tail"] = LEASE_TAIL_MALFORMED
+        return
+    flags = tail[5]
+    incarnation, boot_id, ticket, high_water = struct.unpack_from("<QQII", tail, 8)
+    out["lease_tail"] = LEASE_TAIL_VALID
+    out["echoed_client_incarnation"] = incarnation
+    out["device_boot_id"] = boot_id
+    out["lease_ticket"] = ticket
+    out["high_water_ticket"] = high_water
+    out["lease_valid"] = bool(flags & STREAM_LEASE_FLAG_VALID) and boot_id != 0 and ticket != 0
+    out["lease_superseded"] = bool(flags & STREAM_LEASE_FLAG_SUPERSEDED)
+
+
 def parse_pong(data: bytes) -> Optional[dict]:
     """Parse a PONG (0x11).
 
     Bridge form is 16 bytes (timestamp, server_time). Devices append an
-    extended form (name / address / firmware_version, plus optional
-    trailing volume bytes). Returns ``None`` if not a valid PONG.
+    extended form (name / address / firmware_version, then volume_level and
+    volume_wiper). A v2 receiver's direct reply to an extended PING ends with
+    the 32-byte HBS2 stream lease tail; ``lease_tail`` says how the bytes
+    after volume_wiper classify (``LEASE_TAIL_*``). Returns ``None`` if not a
+    valid PONG.
     """
     hdr = parse_header(data)
     if hdr is None or hdr["command_type"] != CMD_PONG:
@@ -289,8 +423,7 @@ def parse_pong(data: bytes) -> Optional[dict]:
         out["volume_level"] = rest[0]
     if len(rest) >= 2:
         out["volume_wiper"] = rest[1]
-    if len(rest) >= 3:
-        out["volume_steps"] = rest[2]
+    _classify_lease_tail(rest[2:], out)
     return out
 
 

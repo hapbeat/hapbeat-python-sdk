@@ -4,11 +4,18 @@ Logical PCM sources are independent to callers, but Hapbeat devices expose one
 wire stream each.  StreamHub therefore resolves targets to exact PONG-reported
 device endpoints, mixes every matching source per endpoint, and owns the
 BEGIN/DATA/END lifecycle.  No stream packet is ever broadcast.
+
+Each endpoint session is fixed to one wire format when it begins
+(contracts stream-session-v2.md): v2 receivers get the device-issued lease
+plus a fresh generation on every packet and can restart immediately after END;
+pre-v2 receivers get the v1 stream and keep the 300 ms END -> BEGIN guard,
+for that endpoint only.
 """
 
 from __future__ import annotations
 
 import enum
+import logging
 import math
 import struct
 import sys
@@ -20,6 +27,9 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol
 
 from . import protocol
+from .stream_lease import StreamLease, StreamSessionIdentity
+
+logger = logging.getLogger("hapbeat")
 
 SAMPLE_RATE = 16_000
 CHANNELS = 2
@@ -37,6 +47,11 @@ LIMIT_RELEASE_PER_CHUNK = 0.05
 # Keep an empty endpoint session alive for one AP beacon interval. A new source
 # can then join without END -> BEGIN, which may reorder/flush the previous tail.
 SESSION_END_LINGER = 0.31
+# Pre-v2 firmware cannot tell a delayed old END from a new one, so after a
+# legacy END the next BEGIN to that endpoint waits this long. v2 endpoints
+# order sessions by (lease, generation) and restart immediately.
+LEGACY_END_TO_BEGIN_GUARD = 0.3
+MAX_GENERATION = 0xFFFFFFFF
 
 
 class PlaybackStatus(enum.Enum):
@@ -56,7 +71,19 @@ class StreamEndpoint:
     port: int = 7700
 
 
+@dataclass(frozen=True)
+class EndpointStreamMode:
+    """How an endpoint may be streamed now: ``lease=None`` is the legacy v1
+    stream (pre-v2 firmware), otherwise v2 under that device-issued lease."""
+
+    lease: Optional[StreamLease] = None
+
+
+LEGACY_STREAM_MODE = EndpointStreamMode()
+
+
 class EndpointStreamSink(Protocol):
+    # v1 stream, for endpoints in LEGACY_STREAM_MODE
     def stream_begin_endpoint(self, endpoint: StreamEndpoint) -> None: ...
 
     def stream_data_endpoint(
@@ -64,6 +91,20 @@ class EndpointStreamSink(Protocol):
     ) -> None: ...
 
     def stream_end_endpoint(self, endpoint: StreamEndpoint) -> None: ...
+
+    # stream session v2: every packet carries the session identity
+    def stream_begin_v2(
+        self, endpoint: StreamEndpoint, identity: StreamSessionIdentity
+    ) -> None: ...
+
+    def stream_data_v2(
+        self, endpoint: StreamEndpoint, identity: StreamSessionIdentity,
+        offset: int, data: bytes,
+    ) -> None: ...
+
+    def stream_end_v2(
+        self, endpoint: StreamEndpoint, identity: StreamSessionIdentity
+    ) -> None: ...
 
 
 @dataclass
@@ -77,6 +118,9 @@ class _Source:
     key: Optional[str]
     playback: "StreamPlayback"
     completed_endpoints: set[StreamEndpoint] = field(default_factory=set)
+    # matched endpoints whose session cannot begin yet (legacy guard): a finite
+    # source that completes elsewhere meanwhile must still play there
+    waiting_endpoints: set[StreamEndpoint] = field(default_factory=set)
 
     @property
     def frames(self) -> int:
@@ -86,6 +130,8 @@ class _Source:
 @dataclass
 class _EndpointSession:
     endpoint: StreamEndpoint
+    # fixed for the session's whole life; None = legacy v1 stream
+    identity: Optional[StreamSessionIdentity] = None
     cursors: dict[str, int] = field(default_factory=dict)
     offset: int = 0
     started_at: float = field(default_factory=time.perf_counter)
@@ -176,16 +222,26 @@ class StreamHub:
         endpoint_provider: Callable[[], list[StreamEndpoint]],
         *,
         send_ahead_sec: float = DEFAULT_SEND_AHEAD,
+        mode_provider: Optional[
+            Callable[[StreamEndpoint], Optional[EndpointStreamMode]]
+        ] = None,
     ) -> None:
+        """``mode_provider`` returns each endpoint's current stream mode, or
+        None while it may not be streamed (class unknown, lease invalid or
+        superseded): its sources stay Deferred. Without one every endpoint is
+        streamed in LEGACY_STREAM_MODE."""
         self._sink = sink
         self._endpoint_provider = endpoint_provider
+        self._mode_provider = mode_provider or (lambda _endpoint: LEGACY_STREAM_MODE)
         self._send_ahead = max(0.0, float(send_ahead_sec))
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._closed = False
         self._sources: dict[str, _Source] = {}
         self._sessions: dict[StreamEndpoint, _EndpointSession] = {}
-        self._last_end_at: dict[tuple[str, str], float] = {}
+        self._last_legacy_end_at: dict[tuple[str, str], float] = {}
+        # last generation handed out per lease; never reused
+        self._last_generation: dict[StreamLease, int] = {}
         self._thread: Optional[threading.Thread] = None
 
     def play_pcm(
@@ -294,8 +350,7 @@ class StreamHub:
                 source.playback._set_state(PlaybackStatus.STOPPED)
             self._sources.clear()
             for session in list(self._sessions.values()):
-                self._sink.stream_end_endpoint(session.endpoint)
-                self._record_end_locked(session.endpoint)
+                self._end_session_locked(session)
             self._sessions.clear()
             thread = self._thread
         self._wake.set()
@@ -330,9 +385,9 @@ class StreamHub:
             self._wake.clear()
 
     def _reconcile_locked(self) -> None:
-        cutoff = time.perf_counter() - SESSION_END_LINGER * 2
-        self._last_end_at = {
-            key: ended_at for key, ended_at in self._last_end_at.items()
+        cutoff = time.perf_counter() - LEGACY_END_TO_BEGIN_GUARD * 2
+        self._last_legacy_end_at = {
+            key: ended_at for key, ended_at in self._last_legacy_end_at.items()
             if ended_at >= cutoff
         }
         endpoints = {
@@ -340,11 +395,15 @@ class StreamHub:
             for endpoint in self._endpoint_provider()
             if endpoint.ip and endpoint.address
         }
+        modes = {endpoint: self._mode_provider(endpoint) for endpoint in endpoints}
 
         # Migrate an established session when either its exact device address or
         # its IP still identifies one unambiguous new endpoint. Route-only
         # changes continue DATA with the existing offset: END(old)->BEGIN(new)
         # can reorder across an AP's DTIM buffer and kill the new session.
+        # Only under the identity the session began with (same lease, or legacy
+        # on both sides); otherwise the old session is forgotten like a
+        # vanished endpoint.
         missing = [endpoint for endpoint in self._sessions if endpoint not in endpoints]
         unclaimed = set(endpoints) - set(self._sessions)
         for old_endpoint in missing:
@@ -356,6 +415,8 @@ class StreamHub:
             if len(candidates) != 1:
                 continue
             new_endpoint = candidates[0]
+            if not _session_current(self._sessions[old_endpoint], modes[new_endpoint]):
+                continue
             session = self._sessions.pop(old_endpoint)
             session.endpoint = new_endpoint
             self._sessions[new_endpoint] = session
@@ -373,6 +434,16 @@ class StreamHub:
                 for source in self._sources.values():
                     source.completed_endpoints.discard(endpoint)
 
+        # A matched PONG may have changed an endpoint's class (legacy <-> v2),
+        # its lease (device reboot / lease renewal / new incarnation) or made
+        # it unusable (invalid / superseded). End the running session NOW, in
+        # the format and identity it began with (no linger), before a session
+        # in the new mode can start. A superseded endpoint is not re-taken.
+        for endpoint, session in tuple(self._sessions.items()):
+            if not _session_current(session, modes[endpoint]):
+                self._sessions.pop(endpoint)
+                self._end_session_locked(session)
+
         now = time.perf_counter()
         for session in self._sessions.values():
             for source_id in tuple(session.cursors):
@@ -387,18 +458,19 @@ class StreamHub:
         for source in self._sources.values():
             matched = [
                 endpoint for endpoint in endpoints
-                if protocol.address_matches(source.target, endpoint.address)
+                if modes[endpoint] is not None
+                and protocol.address_matches(source.target, endpoint.address)
             ]
+            source.waiting_endpoints.clear()
             for endpoint in matched:
                 if endpoint in source.completed_endpoints:
                     continue
                 session = self._sessions.get(endpoint)
                 if session is None:
-                    if self._restart_cooldown_locked(endpoint):
+                    session = self._begin_session_locked(endpoint, modes[endpoint])
+                    if session is None:
+                        source.waiting_endpoints.add(endpoint)
                         continue
-                    session = _EndpointSession(endpoint=endpoint)
-                    self._sessions[endpoint] = session
-                    self._sink.stream_begin_endpoint(endpoint)
                 if source.id not in session.cursors:
                     if session.empty_since is not None:
                         session.started_at = (
@@ -414,6 +486,52 @@ class StreamHub:
                 None if assigned else DeferredReason.NO_RESOLVED_ENDPOINT,
             )
 
+    def _begin_session_locked(
+        self, endpoint: StreamEndpoint, mode: EndpointStreamMode
+    ) -> Optional[_EndpointSession]:
+        """Open an endpoint session in ``mode``, or None while it must wait
+        (legacy guard after a legacy END, or generations exhausted)."""
+        if mode.lease is None:
+            if self._legacy_guard_locked(endpoint):
+                return None
+            identity = None
+        else:
+            identity = self._allocate_identity_locked(mode.lease)
+            if identity is None:
+                return None
+        session = _EndpointSession(endpoint=endpoint, identity=identity)
+        self._sessions[endpoint] = session
+        if identity is None:
+            self._sink.stream_begin_endpoint(endpoint)
+        else:
+            self._sink.stream_begin_v2(endpoint, identity)
+        return session
+
+    def _allocate_identity_locked(
+        self, lease: StreamLease
+    ) -> Optional[StreamSessionIdentity]:
+        """Next generation under ``lease``, monotonic and never reused.
+        Exhaustion fails closed until the device issues a new lease."""
+        last = self._last_generation.get(lease, 0)
+        if last >= MAX_GENERATION:
+            return None
+        generation = last + 1
+        self._last_generation[lease] = generation
+        if generation == MAX_GENERATION:
+            logger.warning(
+                "stream generation exhausted for lease %s; waiting for a new lease",
+                lease,
+            )
+        return StreamSessionIdentity(lease, generation)
+
+    def _end_session_locked(self, session: _EndpointSession) -> None:
+        """Send END in the session's own format and identity."""
+        if session.identity is None:
+            self._sink.stream_end_endpoint(session.endpoint)
+            self._record_legacy_end_locked(session.endpoint)
+        else:
+            self._sink.stream_end_v2(session.endpoint, session.identity)
+
     def _pump_locked(self) -> None:
         now = time.perf_counter()
         for endpoint, session in list(self._sessions.items()):
@@ -423,7 +541,12 @@ class StreamHub:
                 if frames <= 0:
                     break
                 data, finished = self._mix_locked(session, frames)
-                self._sink.stream_data_endpoint(endpoint, session.offset, data)
+                if session.identity is None:
+                    self._sink.stream_data_endpoint(endpoint, session.offset, data)
+                else:
+                    self._sink.stream_data_v2(
+                        endpoint, session.identity, session.offset, data
+                    )
                 session.offset += len(data)
                 session.frames_sent += frames
                 for source_id in finished:
@@ -437,9 +560,8 @@ class StreamHub:
                 if session.empty_since is None:
                     session.empty_since = now
                 elif now - session.empty_since >= SESSION_END_LINGER:
-                    self._sink.stream_end_endpoint(endpoint)
-                    self._record_end_locked(endpoint)
                     self._sessions.pop(endpoint, None)
+                    self._end_session_locked(session)
 
     def _chunk_frames_locked(self, session: _EndpointSession) -> int:
         maximum = 0
@@ -509,6 +631,9 @@ class StreamHub:
     def _complete_if_unreferenced_locked(self, source_id: str) -> None:
         if any(source_id in session.cursors for session in self._sessions.values()):
             return
+        source = self._sources.get(source_id)
+        if source is not None and source.waiting_endpoints:
+            return
         if source_id in self._sources:
             source = self._sources.pop(source_id)
             source.playback._set_state(PlaybackStatus.STOPPED)
@@ -519,17 +644,31 @@ class StreamHub:
             if source is not None:
                 setattr(source, name, value)
 
-    def _record_end_locked(self, endpoint: StreamEndpoint) -> None:
+    def _record_legacy_end_locked(self, endpoint: StreamEndpoint) -> None:
         ended_at = time.perf_counter()
-        self._last_end_at[("ip", endpoint.ip)] = ended_at
-        self._last_end_at[("address", endpoint.address)] = ended_at
+        self._last_legacy_end_at[("ip", endpoint.ip)] = ended_at
+        self._last_legacy_end_at[("address", endpoint.address)] = ended_at
 
-    def _restart_cooldown_locked(self, endpoint: StreamEndpoint) -> bool:
+    def _legacy_guard_locked(self, endpoint: StreamEndpoint) -> bool:
+        """True while a legacy END to this endpoint is too recent for BEGIN."""
         latest = max(
-            self._last_end_at.get(("ip", endpoint.ip), 0.0),
-            self._last_end_at.get(("address", endpoint.address), 0.0),
+            self._last_legacy_end_at.get(("ip", endpoint.ip), 0.0),
+            self._last_legacy_end_at.get(("address", endpoint.address), 0.0),
         )
-        return time.perf_counter() - latest < SESSION_END_LINGER
+        return time.perf_counter() - latest < LEGACY_END_TO_BEGIN_GUARD
+
+
+def _session_current(
+    session: _EndpointSession, mode: Optional[EndpointStreamMode]
+) -> bool:
+    """Whether ``session`` may keep streaming to an endpoint now in ``mode``:
+    legacy stays legacy; v2 needs the lease it began under to still be the
+    endpoint's usable lease."""
+    if mode is None:
+        return False
+    if session.identity is None:
+        return mode.lease is None
+    return mode.lease == session.identity.lease
 
 
 def _limit(session: _EndpointSession, mixed: list[float], frames: int) -> None:
