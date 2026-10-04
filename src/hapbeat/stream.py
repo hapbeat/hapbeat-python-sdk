@@ -541,7 +541,9 @@ def _limit(session: _EndpointSession, mixed: list[float], frames: int) -> None:
     start = session.limit
     end = want if want < start else min(want, start + LIMIT_RELEASE_PER_CHUNK)
     session.limit = end
-    if start == 1.0 and end == 1.0 and peak <= LIMIT_KNEE:
+    # an idle limiter passes a block within full scale bit-identically (no
+    # knee); during release (coefficient < 1) the knee still shapes the tail
+    if start == 1.0 and end == 1.0 and peak <= FULL_SCALE:
         return
     step = (end - start) / frames
     span = FULL_SCALE - LIMIT_KNEE

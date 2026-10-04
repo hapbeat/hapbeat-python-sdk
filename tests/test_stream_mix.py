@@ -114,6 +114,18 @@ def test_sum_within_full_scale_passes_unchanged():
         hub.close()
 
 
+def test_block_between_knee_and_full_scale_is_bit_identical_when_limiter_idle():
+    # 32000 > 0.95 * FS but <= FS: an idle limiter must not knee-shape it
+    pcm = struct.pack("<hh", 32000, -32000) * 1024
+    hub, session, _ = mixer([(pcm, 1.0, 0.0)])
+    try:
+        out = mix(hub, session, 2)
+        assert out == [32000, -32000] * (2 * CHUNK_FRAMES)
+        assert session.limit == 1.0
+    finally:
+        hub.close()
+
+
 def test_late_join_starts_at_its_first_sample_and_keeps_the_other_continuous():
     a = sine_pcm(100.0, 1.0, amp=0.4)
     hub, session, _ = mixer([(a, 1.0, 0.0)])
