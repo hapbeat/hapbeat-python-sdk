@@ -362,11 +362,11 @@ def _read_cstr(buf: bytes) -> tuple[str, bytes]:
 
 def _classify_lease_tail(tail: bytes, out: dict) -> None:
     """Classify the bytes after volume_wiper (stream-session-v2.md "Legacy
-    receiver fallback"): no HBS2 marker -> absent; a marker (or a truncated
-    prefix of one) with a wrong length / version / reserved / flags ->
-    malformed; otherwise the valid 32-byte lease tail."""
-    head = tail[:4]
-    if not head or head != STREAM_LEASE_TAIL_MARKER[: len(head)]:
+    receiver fallback"): anything that is not the full 4-byte HBS2 marker
+    (including a truncated prefix such as "HB") -> absent; the full marker
+    with a wrong length / version / reserved / flags -> malformed; otherwise
+    the valid 32-byte lease tail."""
+    if tail[:4] != STREAM_LEASE_TAIL_MARKER:
         out["lease_tail"] = LEASE_TAIL_ABSENT
         return
     known_flags = STREAM_LEASE_FLAG_VALID | STREAM_LEASE_FLAG_SUPERSEDED

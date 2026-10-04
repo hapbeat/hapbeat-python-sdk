@@ -37,10 +37,13 @@ CHUNK_FRAMES = 256
 MAX_DATA_BYTES = CHUNK_FRAMES * CHANNELS * 2
 DEFAULT_SEND_AHEAD = 0.15
 FULL_SCALE = 32767.0
-# Mix bus: overlapping sources are summed. A sum within full scale passes
-# unchanged; one that exceeds it is scaled down to LIMIT_TARGET (gain
+# Mix bus: overlapping sources are summed. A sum whose peak is within
+# LIMIT_THRESHOLD (the PCM16 range including -32768, so one full-scale clip
+# alone never triggers it) passes unchanged; one that exceeds it is scaled
+# down to LIMIT_TARGET (gain
 # reduction ramped per sample: attack within the chunk, ~0.3 s release), and a
 # soft knee above LIMIT_KNEE replaces the hard clamp for what is left over.
+LIMIT_THRESHOLD = 32768.0
 LIMIT_TARGET = 0.9 * FULL_SCALE
 LIMIT_KNEE = 0.95 * FULL_SCALE
 LIMIT_RELEASE_PER_CHUNK = 0.05
@@ -121,6 +124,8 @@ class _Source:
     # matched endpoints whose session cannot begin yet (legacy guard): a finite
     # source that completes elsewhere meanwhile must still play there
     waiting_endpoints: set[StreamEndpoint] = field(default_factory=set)
+    # played to the end on at least one endpoint (finite source)
+    played: bool = False
 
     @property
     def frames(self) -> int:
@@ -239,7 +244,9 @@ class StreamHub:
         self._closed = False
         self._sources: dict[str, _Source] = {}
         self._sessions: dict[StreamEndpoint, _EndpointSession] = {}
-        self._last_legacy_end_at: dict[tuple[str, str], float] = {}
+        # keyed per endpoint (ip, port, address): another device sharing the
+        # address or IP is not delayed
+        self._last_legacy_end_at: dict[StreamEndpoint, float] = {}
         # last generation handed out per lease; never reused
         self._last_generation: dict[StreamLease, int] = {}
         self._thread: Optional[threading.Thread] = None
@@ -486,6 +493,13 @@ class StreamHub:
                 None if assigned else DeferredReason.NO_RESOLVED_ENDPOINT,
             )
 
+        # A pending (guarded) endpoint that expired or stopped matching left
+        # waiting_endpoints above: a finite source already played elsewhere
+        # completes now, not on that endpoint's next pump (§6.10).
+        for source_id, source in tuple(self._sources.items()):
+            if source.played and not source.loop:
+                self._complete_if_unreferenced_locked(source_id)
+
     def _begin_session_locked(
         self, endpoint: StreamEndpoint, mode: EndpointStreamMode
     ) -> Optional[_EndpointSession]:
@@ -553,6 +567,7 @@ class StreamHub:
                     source = self._sources.get(source_id)
                     if source is not None:
                         source.completed_endpoints.add(endpoint)
+                        source.played = True
                     session.cursors.pop(source_id, None)
                     self._complete_if_unreferenced_locked(source_id)
 
@@ -645,16 +660,11 @@ class StreamHub:
                 setattr(source, name, value)
 
     def _record_legacy_end_locked(self, endpoint: StreamEndpoint) -> None:
-        ended_at = time.perf_counter()
-        self._last_legacy_end_at[("ip", endpoint.ip)] = ended_at
-        self._last_legacy_end_at[("address", endpoint.address)] = ended_at
+        self._last_legacy_end_at[endpoint] = time.perf_counter()
 
     def _legacy_guard_locked(self, endpoint: StreamEndpoint) -> bool:
         """True while a legacy END to this endpoint is too recent for BEGIN."""
-        latest = max(
-            self._last_legacy_end_at.get(("ip", endpoint.ip), 0.0),
-            self._last_legacy_end_at.get(("address", endpoint.address), 0.0),
-        )
+        latest = self._last_legacy_end_at.get(endpoint, 0.0)
         return time.perf_counter() - latest < LEGACY_END_TO_BEGIN_GUARD
 
 
@@ -672,17 +682,18 @@ def _session_current(
 
 
 def _limit(session: _EndpointSession, mixed: list[float], frames: int) -> None:
-    """Keep the summed sources in range without a hard clamp: past full scale,
-    a gain reduction to LIMIT_TARGET / peak (attack within the chunk, release
+    """Keep the summed sources in range without a hard clamp: past
+    LIMIT_THRESHOLD, a gain reduction to LIMIT_TARGET / peak (attack within the chunk, release
     by LIMIT_RELEASE_PER_CHUNK per chunk), ramped per sample, then a soft knee."""
     peak = max((abs(v) for v in mixed), default=0.0)
-    want = LIMIT_TARGET / peak if peak > FULL_SCALE else 1.0
+    want = LIMIT_TARGET / peak if peak > LIMIT_THRESHOLD else 1.0
     start = session.limit
     end = want if want < start else min(want, start + LIMIT_RELEASE_PER_CHUNK)
     session.limit = end
-    # an idle limiter passes a block within full scale bit-identically (no
-    # knee); during release (coefficient < 1) the knee still shapes the tail
-    if start == 1.0 and end == 1.0 and peak <= FULL_SCALE:
+    # an idle limiter passes a block within LIMIT_THRESHOLD bit-identically
+    # (no knee; +32768 saturates to 32767 afterwards); during release
+    # (coefficient < 1) the knee still shapes the tail
+    if start == 1.0 and end == 1.0 and peak <= LIMIT_THRESHOLD:
         return
     step = (end - start) / frames
     span = FULL_SCALE - LIMIT_KNEE

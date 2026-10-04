@@ -126,6 +126,21 @@ def test_block_between_knee_and_full_scale_is_bit_identical_when_limiter_idle():
         hub.close()
 
 
+def test_single_full_scale_clip_with_minus_32768_passes_unchanged():
+    # a normalized full-scale clip at gain 1 peaks at |-32768| = 32768: that
+    # alone must not trigger the limiter (threshold is > 32768, §5.8)
+    frames = [(32767, -32768), (-32768, 32767), (0, -32768), (16000, -16000)]
+    pcm = b"".join(struct.pack("<hh", l, r) for l, r in frames) * 256
+    hub, session, _ = mixer([(pcm, 1.0, 0.0)])
+    try:
+        out = mix(hub, session, 3)
+        expect = [v for frame in frames for v in frame] * (3 * CHUNK_FRAMES // 4)
+        assert out == expect
+        assert session.limit == 1.0
+    finally:
+        hub.close()
+
+
 def test_late_join_starts_at_its_first_sample_and_keeps_the_other_continuous():
     a = sine_pcm(100.0, 1.0, amp=0.4)
     hub, session, _ = mixer([(a, 1.0, 0.0)])

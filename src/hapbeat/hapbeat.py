@@ -353,6 +353,24 @@ class Hapbeat:
         return self._client.send_discovery(
             protocol.build_ping(seq, timestamp_us, incarnation))
 
+    def reacquire_stream_ownership(self) -> bool:
+        """Retake stream ownership after a device reported this client's lease
+        as superseded by another writer (stream-session-v2.md).
+
+        Starts a new client incarnation and re-PINGs: sessions under the old
+        incarnation's leases end, and every v2 device issues a fresh lease on
+        its matched reply, after which deferred sources resume. Call it once
+        the other writer has stopped. Returns the PING send result, or False
+        when the connection is not open.
+        """
+        if not self._opened:
+            return False
+        with self._devices_lock:
+            self._client_incarnation = _new_client_incarnation()
+            self._pending_pings.clear()
+        self._stream_hub.reconcile()
+        return self.ping()
+
     def connect_status(self, *, connected: bool = True) -> bool:
         """Announce connection state so the device OLED shows the app name."""
         pkt = protocol.build_connect_status(
@@ -649,8 +667,8 @@ class Hapbeat:
         if state.lease_superseded and not (previous and previous.lease_superseded):
             logger.warning(
                 "stream lease at %s was superseded by another writer; streams "
-                "to it are deferred. Reconnect (close() then open()) after the "
-                "other writer has stopped.", ip,
+                "to it are deferred. Call reacquire_stream_ownership() after "
+                "the other writer has stopped.", ip,
             )
 
     # ── Keep-alive thread ───────────────────────────────────────────
@@ -681,16 +699,19 @@ class Hapbeat:
         self._keepalive_thread.start()
 
     def _keepalive_wait(self) -> float:
-        """The keep-alive interval, capped while any device streams v2: its
-        device lease expires after 15 s without PING."""
+        """The keep-alive interval, capped unless every known device is
+        legacy: a v2 device lease expires after 15 s without PING, and a
+        device not yet classified (or none heard yet) may turn out to be v2."""
         with self._devices_lock:
-            has_v2 = any(
-                state.endpoint_class is EndpointClass.V2
-                for state in self._stream_states.values()
+            states = [self._stream_states.get(ip) for ip in self._devices]
+            states.extend(self._stream_states.values())
+            all_legacy = bool(states) and all(
+                state is not None and state.endpoint_class is EndpointClass.LEGACY
+                for state in states
             )
-        if has_v2:
-            return min(self._keepalive_interval, V2_LEASE_REFRESH_INTERVAL)
-        return self._keepalive_interval
+        if all_legacy:
+            return self._keepalive_interval
+        return min(self._keepalive_interval, V2_LEASE_REFRESH_INTERVAL)
 
     def _stop_keepalive(self) -> None:
         if self._keepalive_stop is not None:

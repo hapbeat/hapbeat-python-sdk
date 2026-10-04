@@ -20,17 +20,24 @@
   device 発行の lease と generation を BEGIN/DATA/END に付け、END 直後でも次の
   session を待たずに開始する（300 ms の END→BEGIN 待ちを撤廃）。旧ファームの機器には
   従来の v1 stream で送り、300 ms guard はその機器だけに掛ける。判定前・lease 無効・
-  superseded の機器への stream は Deferred のまま送らない（superseded は close()→open()
-  で再取得）。判定・lease が変わった session は旧形式・旧 identity で END してから新形式で
-  BEGIN する。
+  superseded の機器への stream は Deferred のまま送らない（superseded は
+  `Hapbeat.reacquire_stream_ownership()` で新しい incarnation を作り再 PING して再取得）。
+  判定・lease が変わった session は旧形式・旧 identity で END してから新形式で
+  BEGIN する。PONG の volume_wiper 以降が完全な `HBS2` marker でない（"HB" 等の途中まで
+  を含む）応答は旧ファームとして扱う。300 ms guard は endpoint（IP・port・address の組）
+  単位で、同じ address の別機器には掛からない。keep-alive は全機器が旧ファームと判定される
+  までは 5 s 以下の間隔で PING する（判定前に v2 lease が切れないように）。
+  guard 待ちの endpoint が消えた・target に一致しなくなった有限 source は、その時点で
+  完了する（機器復帰時に先頭から再生し直さない）。
 
 ### 修正
 - `StreamHub` の mix: source の gain / pan を変えたとき、256 frame chunk の境界で段差が
   出ていた（zipper）。前回値から新しい値へ chunk 内で sample ごとに線形補間する。
 - 複数 source の和がフルスケールを超えると hard clamp で歪んでいた。超えたときだけ
   0.9 FS へ gain を下げる limiter（chunk 内で補間、約 0.3 s で復帰）と、0.95 FS 以上の
-  soft knee に置き換えた。フルスケール以内の和は limiter が戻りきっていれば bit 単位で
-  そのまま通す（0.95〜1.0 FS の block にも knee を掛けない。contracts §5.8）。
+  soft knee に置き換えた。ピークが 32768 以内の和（-32768 を含む full scale の clip 1 本
+  など）は limiter が戻りきっていれば bit 単位でそのまま通す（0.95〜1.0 FS の block にも
+  knee を掛けない。contracts §5.8）。
 - 再サンプリング不要な PCM（16 kHz）の正規化が sample ごとの Python ループで、8.5 s の
   stereo で約 210 ms かかり GIL を握っていた（連続した `stream_pcm` の開始遅延・mixer の
   送出遅れ）。`array` によるコピーにして 5 ms 程度にした（結果は同一）。

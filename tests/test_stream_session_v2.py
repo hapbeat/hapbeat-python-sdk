@@ -175,8 +175,13 @@ def test_parse_pong_classifies_the_lease_tail():
                                + struct.pack("<qq", 5, 1))
     assert bare["lease_tail"] == protocol.LEASE_TAIL_ABSENT
 
+    # only the full HBS2 marker counts as a marker: a truncated prefix after
+    # volume_wiper is "no marker" (legacy), not a malformed tail
+    for prefix in (b"H", b"HB", b"HBS"):
+        assert tail_of(prefix)["lease_tail"] == protocol.LEASE_TAIL_ABSENT
+
     good = lease_tail(9, 0xAB, 4)
-    for bad in (good[:-1], good + b"\x00", b"HB",
+    for bad in (good[:-1], good + b"\x00", b"HBS2",
                 lease_tail(9, 0xAB, 4, version=2),
                 lease_tail(9, 0xAB, 4, reserved=1),
                 lease_tail(9, 0xAB, 4, flags=0x05)):
@@ -303,6 +308,8 @@ def test_invalid_or_superseded_lease_defers_and_is_never_legacy(fake_client):  #
 def test_keepalive_is_capped_while_a_device_is_v2(fake_client):  # noqa: F811
     hb = hapbeat_mod.Hapbeat(keepalive=False, keepalive_interval=30.0).open()
     try:
+        # nothing classified yet: a device may turn out to be v2 (15 s lease)
+        assert hb._keepalive_wait() == V2_LEASE_REFRESH_INTERVAL
         reply(hb, "192.0.2.10", "player_1/a")
         assert hb._keepalive_wait() == 30.0
         reply(hb, "192.0.2.11", "player_1/b", lease=(0xB1, 1))
@@ -412,6 +419,77 @@ def test_legacy_guard_applies_only_to_the_legacy_endpoint():
         assert sink.kinds(LEGACY_EP, "begin")[1][4] - legacy_end >= LEGACY_END_TO_BEGIN_GUARD
         assert all(e[2] is None for e in sink.events if e[1] == LEGACY_EP)
         assert all(e[2] is not None for e in sink.events if e[1] == V2_EP)
+    finally:
+        hub.close()
+
+
+def test_legacy_guard_is_per_endpoint_not_per_shared_address():
+    a = StreamEndpoint("192.0.2.30", "player_1/same")
+    b = StreamEndpoint("192.0.2.31", "player_1/same")
+    present = [a]
+    hub = StreamHub(sink := RecordingSink(), lambda: list(present), send_ahead_sec=10.0,
+                    mode_provider=modes_of({a: LEGACY_STREAM_MODE, b: LEGACY_STREAM_MODE}))
+    try:
+        hub.play_pcm(SHORT_PCM, target="player_1")
+        _wait_until(lambda: sink.kinds(a, "end"))
+        present.append(b)
+        hub.play_pcm(SHORT_PCM, target="player_1")
+        # b shares a's address but is another device: no guard there
+        assert len(sink.kinds(b, "begin")) == 1
+        assert len(sink.kinds(a, "begin")) == 1            # guarded
+        _wait_until(lambda: len(sink.kinds(a, "begin")) == 2)
+    finally:
+        hub.close()
+
+
+def test_finite_source_completes_when_its_guarded_endpoint_disappears():
+    present = [V2_EP, LEGACY_EP]
+    sink = RecordingSink()
+    hub = StreamHub(sink, lambda: list(present), send_ahead_sec=10.0,
+                    mode_provider=modes_of({V2_EP: EndpointStreamMode(LEASE),
+                                            LEGACY_EP: LEGACY_STREAM_MODE}))
+    try:
+        hub.play_pcm(SHORT_PCM, target="player_1")
+        _wait_until(lambda: sink.kinds(V2_EP, "end") and sink.kinds(LEGACY_EP, "end"))
+        playback = hub.play_pcm(SHORT_PCM, target="player_1")
+        # played out on v2, still pending on the guarded legacy endpoint
+        _wait_until(lambda: len(sink.kinds(V2_EP, "data")) == 2)
+        assert len(sink.kinds(LEGACY_EP, "begin")) == 1
+        assert playback.status is not PlaybackStatus.STOPPED
+        present.remove(LEGACY_EP)  # the pending endpoint expires
+        hub.reconcile()
+        assert playback.status is PlaybackStatus.STOPPED
+        assert hub.active_playbacks == ()
+        _wait_until(lambda: hub._thread is None)            # hub idles
+        present.append(LEGACY_EP)  # the device returns after the guard
+        time.sleep(LEGACY_END_TO_BEGIN_GUARD + 0.05)
+        hub.reconcile()
+        time.sleep(0.05)
+        assert len(sink.kinds(LEGACY_EP, "begin")) == 1     # no replay from frame 0
+    finally:
+        hub.close()
+
+
+def test_finite_source_completes_when_its_guarded_endpoint_stops_matching():
+    present = [V2_EP, LEGACY_EP]
+    sink = RecordingSink()
+    hub = StreamHub(sink, lambda: list(present), send_ahead_sec=10.0,
+                    mode_provider=modes_of({V2_EP: EndpointStreamMode(LEASE),
+                                            LEGACY_EP: LEGACY_STREAM_MODE}))
+    try:
+        hub.play_pcm(SHORT_PCM, target="player_1")
+        _wait_until(lambda: sink.kinds(V2_EP, "end") and sink.kinds(LEGACY_EP, "end"))
+        playback = hub.play_pcm(SHORT_PCM, target="player_1")
+        _wait_until(lambda: len(sink.kinds(V2_EP, "data")) == 2)
+        assert playback.status is not PlaybackStatus.STOPPED
+        # Address Override: the guarded endpoint no longer matches the target
+        moved = StreamEndpoint(LEGACY_EP.ip, "player_2/legacy")
+        present[present.index(LEGACY_EP)] = moved
+        hub.reconcile()
+        assert playback.status is PlaybackStatus.STOPPED
+        time.sleep(LEGACY_END_TO_BEGIN_GUARD + 0.05)
+        assert sink.kinds(moved, "begin") == []
+        assert len(sink.kinds(LEGACY_EP, "begin")) == 1
     finally:
         hub.close()
 
@@ -563,3 +641,33 @@ def test_superseded_lease_ends_the_session_and_does_not_retake(fake_client):  # 
         assert playback.status is PlaybackStatus.DEFERRED
     finally:
         hb.close()
+
+
+def test_reacquire_stream_ownership_retakes_a_superseded_lease(fake_client):  # noqa: F811
+    hb = make_hb()
+    ip, address = "192.0.2.10", "player_1/chest"
+    try:
+        reply(hb, ip, address, lease=(0xB1, 4))
+        playback = hb.stream_pcm(LOOP_PCM, loop=True)
+        _wait_until(lambda: _running(hb, ip))
+        reply(hb, ip, address, lease=(0xB1, 4), flags=1 | SUPERSEDED)
+        assert playback.status is PlaybackStatus.DEFERRED
+        old_incarnation = hb._client_incarnation
+        mark = len(stream_log(hb, ip))
+        assert hb.reacquire_stream_ownership()
+        assert hb._client_incarnation not in (0, old_incarnation)
+        seq, ts, inc = last_ping(hb)
+        assert inc == hb._client_incarnation
+        # the device issues a fresh lease to the new incarnation
+        reply(hb, ip, address, lease=(0xB1, 5), ping=(seq, ts, inc))
+        assert playback.status is PlaybackStatus.ACTIVE
+        _wait_until(lambda: of(stream_log(hb, ip)[mark:], protocol.CMD_STREAM_DATA))
+        begins = of(stream_log(hb, ip)[mark:], protocol.CMD_STREAM_BEGIN)
+        assert [b["identity"][:2] for b in begins] == [(0xB1, 5)]
+    finally:
+        hb.close()
+
+
+def test_reacquire_stream_ownership_is_false_when_closed(fake_client):  # noqa: F811
+    hb = hapbeat_mod.Hapbeat(keepalive=False)
+    assert hb.reacquire_stream_ownership() is False
