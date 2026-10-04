@@ -11,9 +11,11 @@ from __future__ import annotations
 import enum
 import math
 import struct
+import sys
 import threading
 import time
 import uuid
+from array import array
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol
 
@@ -24,6 +26,14 @@ CHANNELS = 2
 CHUNK_FRAMES = 256
 MAX_DATA_BYTES = CHUNK_FRAMES * CHANNELS * 2
 DEFAULT_SEND_AHEAD = 0.15
+FULL_SCALE = 32767.0
+# Mix bus: overlapping sources are summed. A sum within full scale passes
+# unchanged; one that exceeds it is scaled down to LIMIT_TARGET (gain
+# reduction ramped per sample: attack within the chunk, ~0.3 s release), and a
+# soft knee above LIMIT_KNEE replaces the hard clamp for what is left over.
+LIMIT_TARGET = 0.9 * FULL_SCALE
+LIMIT_KNEE = 0.95 * FULL_SCALE
+LIMIT_RELEASE_PER_CHUNK = 0.05
 # Keep an empty endpoint session alive for one AP beacon interval. A new source
 # can then join without END -> BEGIN, which may reorder/flush the previous tail.
 SESSION_END_LINGER = 0.31
@@ -81,6 +91,10 @@ class _EndpointSession:
     started_at: float = field(default_factory=time.perf_counter)
     frames_sent: int = 0
     empty_since: Optional[float] = None
+    # (L, R) channel gains each source was last mixed with: a gain / pan change
+    # is ramped across the next chunk instead of stepping at its boundary
+    gains: dict[str, tuple[float, float]] = field(default_factory=dict)
+    limit: float = 1.0
 
 
 class StreamPlayback:
@@ -449,6 +463,14 @@ class StreamHub:
                 finished.add(source_id)
                 continue
             left_gain, right_gain = _channel_gains(source.gain, source.pan)
+            # a new source starts at its own gains (its PCM carries the onset);
+            # a changed gain / pan ramps linearly over this chunk (no zipper)
+            left0, right0 = session.gains.get(source_id, (left_gain, right_gain))
+            session.gains[source_id] = (left_gain, right_gain)
+            step_l = (left_gain - left0) / frames
+            step_r = (right_gain - right0) / frames
+            ramp = step_l != 0.0 or step_r != 0.0
+            pcm = source.pcm
             cursor = initial_cursor
             for frame in range(frames):
                 if cursor >= source.frames:
@@ -458,13 +480,22 @@ class StreamHub:
                         finished.add(source_id)
                         break
                 base = cursor * CHANNELS
-                mixed[frame * CHANNELS] += source.pcm[base] * left_gain
-                mixed[frame * CHANNELS + 1] += source.pcm[base + 1] * right_gain
+                if ramp:
+                    gl = left0 + step_l * (frame + 1)
+                    gr = right0 + step_r * (frame + 1)
+                else:
+                    gl, gr = left_gain, right_gain
+                mixed[frame * CHANNELS] += pcm[base] * gl
+                mixed[frame * CHANNELS + 1] += pcm[base + 1] * gr
                 cursor += 1
             session.cursors[source_id] = cursor
             if not source.loop and cursor >= source.frames:
                 finished.add(source_id)
+        for source_id in tuple(session.gains):
+            if source_id in finished or source_id not in session.cursors:
+                del session.gains[source_id]
 
+        _limit(session, mixed, frames)
         samples = (_saturate_pcm16(value) for value in mixed)
         return struct.pack(f"<{frames * CHANNELS}h", *samples), finished
 
@@ -501,6 +532,30 @@ class StreamHub:
         return time.perf_counter() - latest < SESSION_END_LINGER
 
 
+def _limit(session: _EndpointSession, mixed: list[float], frames: int) -> None:
+    """Keep the summed sources in range without a hard clamp: past full scale,
+    a gain reduction to LIMIT_TARGET / peak (attack within the chunk, release
+    by LIMIT_RELEASE_PER_CHUNK per chunk), ramped per sample, then a soft knee."""
+    peak = max((abs(v) for v in mixed), default=0.0)
+    want = LIMIT_TARGET / peak if peak > FULL_SCALE else 1.0
+    start = session.limit
+    end = want if want < start else min(want, start + LIMIT_RELEASE_PER_CHUNK)
+    session.limit = end
+    if start == 1.0 and end == 1.0 and peak <= LIMIT_KNEE:
+        return
+    step = (end - start) / frames
+    span = FULL_SCALE - LIMIT_KNEE
+    for frame in range(frames):
+        g = start + step * (frame + 1)
+        for ch in range(CHANNELS):
+            i = frame * CHANNELS + ch
+            v = mixed[i] * g
+            a = abs(v)
+            if a > LIMIT_KNEE:
+                v = math.copysign(LIMIT_KNEE + span * math.tanh((a - LIMIT_KNEE) / span), v)
+            mixed[i] = v
+
+
 def _normalize_pcm16(pcm: bytes, *, sample_rate: int, channels: int) -> tuple[int, ...]:
     if sample_rate <= 0:
         raise ValueError("sample_rate must be positive")
@@ -511,6 +566,19 @@ def _normalize_pcm16(pcm: bytes, *, sample_rate: int, channels: int) -> tuple[in
         raise ValueError("PCM16 data must contain complete frames")
     if not pcm:
         return ()
+    if sample_rate == SAMPLE_RATE:
+        # no resampling: C-level copies (the per-sample loop below took ~210 ms
+        # for 8.5 s of stereo, holding the GIL and starving the mixer thread)
+        values = array("h")
+        values.frombytes(pcm)
+        if sys.byteorder != "little":
+            values.byteswap()
+        if channels == 2:
+            return tuple(values)
+        stereo = array("h", bytes(4 * len(values)))
+        stereo[0::2] = values
+        stereo[1::2] = values
+        return tuple(stereo)
     values = [item[0] for item in struct.iter_unpack("<h", pcm)]
     input_frames = len(values) // channels
     output_frames = max(1, round(input_frames * SAMPLE_RATE / sample_rate))

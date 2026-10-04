@@ -15,6 +15,16 @@
   末尾に f32 で常時付与する（contracts message-format.md §0x01 / DEC-055）。
   CLI `hapbeat play --pan`、OSC `/hapbeat/play` の第 5 引数からも指定できる。
 
+### 修正
+- `StreamHub` の mix: source の gain / pan を変えたとき、256 frame chunk の境界で段差が
+  出ていた（zipper）。前回値から新しい値へ chunk 内で sample ごとに線形補間する。
+- 複数 source の和がフルスケールを超えると hard clamp で歪んでいた。超えたときだけ
+  0.9 FS へ gain を下げる limiter（chunk 内で補間、約 0.3 s で復帰）と、0.95 FS 以上の
+  soft knee に置き換えた。フルスケール以内の和はそのまま通す。
+- 再サンプリング不要な PCM（16 kHz）の正規化が sample ごとの Python ループで、8.5 s の
+  stereo で約 210 ms かかり GIL を握っていた（連続した `stream_pcm` の開始遅延・mixer の
+  送出遅れ）。`array` によるコピーにして 5 ms 程度にした（結果は同一）。
+
 ## 0.3.0 — マルチホーム環境での探索・送信の修正
 
 Unity SDK v0.4.0 で確定した接続まわりの修正を移植した。
