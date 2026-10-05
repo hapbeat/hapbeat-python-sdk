@@ -169,6 +169,10 @@ class Hapbeat:
         self._stream_hub.open()
         self._opened = True
         self._client.add_pong_listener(self._on_pong)
+        # A broadcast route locked on a network no device answers from any
+        # more is released after the same window that retires a unicast
+        # destination (contracts message-format.md §2.1).
+        self._client.route_ttl = self.device_ttl
         self._client.open()
         if self._keepalive:
             self._start_keepalive()

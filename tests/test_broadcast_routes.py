@@ -177,6 +177,144 @@ def test_single_nic_host_is_unchanged(monkeypatch):
     assert sock.destinations == ["192.168.0.255"]
 
 
+# ── Releasing the lock (contracts message-format.md §2.1) ───────────
+# The lock used to last until the socket was reopened. After the PC moved to
+# another Wi-Fi network every PING still went to the old subnet, devices on
+# the new network were never found, and only a process restart recovered.
+class FakeClock:
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    fake = FakeClock()
+    monkeypatch.setattr(client_mod.time, "monotonic", fake)
+    return fake
+
+
+def switch_network(monkeypatch, subnets):
+    calls = []
+
+    def enumerate_now():
+        calls.append(1)
+        return list(subnets)
+
+    monkeypatch.setattr(client_mod, "local_ipv4_subnets", enumerate_now)
+    return calls
+
+
+def test_lock_is_released_when_its_network_is_gone(monkeypatch, clock):
+    udp, sock = make_client(monkeypatch, [("192.168.0.205", 24)])
+    udp._lock_route_for("192.168.0.42")
+    assert udp.broadcast_destination() == "192.168.0.255"
+
+    # Wi-Fi moves to another network: the old subnet disappears.
+    switch_network(monkeypatch, [("192.168.11.7", 24)])
+    clock.now += 2.0
+    udp.send_discovery(b"ping")
+    assert sock.destinations == ["192.168.11.255", DEFAULT_BROADCAST]
+    assert udp.broadcast_destination() == DEFAULT_BROADCAST
+
+    # The first device on the new network locks again.
+    udp._lock_route_for("192.168.11.30")
+    assert udp.broadcast_destination() == "192.168.11.255"
+
+
+def test_lock_is_released_when_nobody_answers_for_route_ttl(monkeypatch, clock):
+    # The interface list cannot show a switch to a network that reuses the old
+    # subnet number, or devices that all went away: silence has to do it.
+    udp, sock = make_client(monkeypatch, SUBNETS)
+    udp.route_ttl = 15.0
+    udp._lock_route_for("192.168.0.42")
+
+    clock.now += 15.5
+    udp.send_discovery(b"ping")
+    assert sock.destinations == ["192.168.0.255", "172.17.255.255", DEFAULT_BROADCAST]
+    assert udp.broadcast_destination() == DEFAULT_BROADCAST
+
+
+def test_pongs_from_the_locked_subnet_keep_the_lock(monkeypatch, clock):
+    udp, sock = make_client(monkeypatch, SUBNETS)
+    udp.route_ttl = 15.0
+    udp._lock_route_for("192.168.0.42")
+    for _ in range(5):
+        clock.now += 10.0
+        udp._lock_route_for("192.168.0.42")  # keep-alive PONG
+        sock.sent.clear()
+        udp.send_discovery(b"ping")
+        assert sock.destinations == ["192.168.0.255"]
+
+
+def test_pongs_from_another_subnet_do_not_keep_the_lock(monkeypatch, clock):
+    udp, sock = make_client(monkeypatch, SUBNETS)
+    udp.route_ttl = 15.0
+    udp._lock_route_for("192.168.0.42")
+    clock.now += 10.0
+    udp._lock_route_for("172.17.0.9")
+    clock.now += 10.0
+    udp.send_discovery(b"ping")
+    assert udp.broadcast_destination() == DEFAULT_BROADCAST
+    assert len(sock.destinations) == 3
+
+
+def test_fan_out_follows_a_network_change_before_any_lock(monkeypatch, clock):
+    udp, sock = make_client(monkeypatch, [("192.168.0.205", 24)])
+    switch_network(monkeypatch, [("10.0.0.5", 24)])
+    clock.now += 2.0
+    udp.send_discovery(b"ping")
+    assert sock.destinations == ["10.0.0.255", DEFAULT_BROADCAST]
+
+
+def test_new_interface_keeps_a_live_lock(monkeypatch, clock):
+    # Docking Ethernet while the devices are still on Wi-Fi changes nothing.
+    udp, sock = make_client(monkeypatch, [("192.168.0.205", 24)])
+    udp._lock_route_for("192.168.0.42")
+    switch_network(monkeypatch, [("192.168.0.205", 24), ("172.17.192.1", 16)])
+    clock.now += 2.0
+    udp.send_discovery(b"ping")
+    assert sock.destinations == ["192.168.0.255"]
+
+
+def test_enumeration_is_rate_limited_and_off_the_playback_path(monkeypatch, clock):
+    udp, sock = make_client(monkeypatch, SUBNETS)
+    calls = switch_network(monkeypatch, SUBNETS)
+    udp._routes_enumerated_at = clock.now
+
+    for _ in range(50):
+        udp.send(b"play")
+    assert calls == []
+
+    clock.now += 0.5
+    udp.send_discovery(b"ping")
+    assert calls == []
+    clock.now += 0.6
+    udp.send_discovery(b"ping")
+    udp.send_discovery(b"ping")
+    assert len(calls) == 1
+
+
+def test_explicit_broadcast_addr_never_enumerates(monkeypatch, clock):
+    calls = switch_network(monkeypatch, SUBNETS)
+    udp = UdpClient(broadcast_addr="192.168.5.255")
+    udp._sock = FakeSocket()
+    clock.now += 5.0
+    udp.send_discovery(b"ping")
+    assert calls == []
+
+
+def test_hapbeat_hands_its_device_ttl_to_the_route_lock(fake_client):  # noqa: F811
+    hb = hapbeat_mod.Hapbeat(keepalive=False, device_ttl=7.0)
+    hb.open()
+    try:
+        assert hb._client.route_ttl == 7.0
+    finally:
+        hb.close()
+
+
 # ── Send failures must not be terminal, and must not flood ──────────
 def test_send_failure_keeps_the_socket_and_logs_once(monkeypatch, caplog):
     udp, sock = make_client(monkeypatch, [("192.168.0.205", 24)],

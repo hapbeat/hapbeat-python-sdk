@@ -40,6 +40,15 @@ DEFAULT_BROADCAST = "255.255.255.255"
 
 PongCallback = Callable[[dict, str], None]
 
+# Re-enumerating the host's interfaces is a system call, so it happens only on
+# discovery sends and at most once per this many seconds (the keep-alive
+# period is 5 s, well above it).
+ROUTE_REFRESH_MIN_INTERVAL = 1.0
+
+# How long a locked route survives without a PONG from its subnet when the
+# caller does not say. Matches Hapbeat.device_ttl's default.
+DEFAULT_ROUTE_TTL = 15.0
+
 # Stand-in "destination" for the case where a whole fan-out failed, so that
 # outage gets the same once-per-outage treatment as a single address.
 _ALL_DESTINATIONS = "all broadcast destinations"
@@ -67,6 +76,8 @@ class BroadcastRoute:
     resolves through the directly-connected route for its subnet instead, so the
     metric never applies. That is also why hapbeat-helper kept working on such a
     host: it finds devices over mDNS and unicasts, which resolves the same way.
+
+    Contract: hapbeat-contracts ``specs/message-format.md`` §2.1.
     """
 
     __slots__ = ("addr", "network", "mask", "limited")
@@ -86,6 +97,15 @@ class BroadcastRoute:
             return (_to_uint32(ip) & self.mask) == self.network
         except (ValueError, AttributeError):
             return False
+
+    def same_subnet(self, other: "BroadcastRoute") -> bool:
+        """Whether ``other`` is the same local network as this route.
+
+        Network and mask rather than the address alone, because the question
+        is whether the network a lock was taken on still exists.
+        """
+        return (self.limited == other.limited and self.network == other.network
+                and self.mask == other.mask)
 
     def __repr__(self) -> str:  # pragma: no cover — debugging aid
         return f"BroadcastRoute({self.addr})"
@@ -130,6 +150,7 @@ class UdpClient:
         port: int = DEFAULT_PORT,
         broadcast_addr: str = DEFAULT_BROADCAST,
         bind_port: int = 0,
+        route_ttl: float = DEFAULT_ROUTE_TTL,
     ) -> None:
         self.port = port  # destination port (the device listens here)
         # Local receive bind. Default 0 = ephemeral: this leaves the
@@ -146,10 +167,19 @@ class UdpClient:
         # destination by hand, which is why there is no separate setting.
         self._auto_routes = broadcast_addr == DEFAULT_BROADCAST
         self._routes: List[BroadcastRoute] = []
-        # The route a device actually answered on; None until the first PONG.
-        # Written from the receive thread, read from every sending thread —
-        # rebinding one attribute, which is atomic under the GIL.
+        self._routes_enumerated_at = 0.0
+        # The route a device actually answered on; None until the first PONG,
+        # and again once the lock is released (see _refresh_routes). Read
+        # without a lock on every send — rebinding one attribute is atomic
+        # under the GIL. Changed only under _route_lock: taken by the receive
+        # thread, released by whichever thread sends discovery.
         self._locked_route: Optional[BroadcastRoute] = None
+        # When a PONG last came from inside the locked route's subnet.
+        self._locked_route_seen_at = 0.0
+        # A lock nobody has answered on for this long is released; Hapbeat
+        # passes its device_ttl.
+        self.route_ttl = route_ttl
+        self._route_lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -163,10 +193,11 @@ class UdpClient:
     def open(self) -> None:
         if self._sock is not None:
             return
-        # Enumerated per open() rather than once per process: the host's
-        # interfaces change when a laptop is docked, a VPN comes up or Wi-Fi
-        # moves to another network.
+        # Enumerated again on discovery sends as well (_refresh_routes): the
+        # host's interfaces change when a laptop is docked, a VPN comes up or
+        # Wi-Fi moves to another network, and none of that closes the socket.
         self._routes = enumerate_broadcast_routes() if self._auto_routes else []
+        self._routes_enumerated_at = time.monotonic()
         self._locked_route = None
         self._failed_destinations = set()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -314,6 +345,7 @@ class UdpClient:
         if sock is None:
             logger.error("send before open()")
             return False
+        self._refresh_routes()
         # Already pinned to a subnet, or no enumeration to fan out over: one
         # destination, same as any other packet.
         if self._locked_route is not None or not self._routes:
@@ -348,19 +380,65 @@ class UdpClient:
     def _lock_route_for(self, ip: str) -> None:
         """Pin broadcasts to the subnet a device actually replied from.
 
-        First reply wins, and the choice lasts until the socket is reopened.
-        With devices on two subnets at once this settles on whichever answered
-        first; broadcasts do not cross subnets anyway, so the alternative is not
-        reaching both, it is reaching neither reliably.
+        Called for every PONG. First reply wins, and later replies from the
+        same subnet keep the lock fresh. With devices on two subnets at once
+        this settles on whichever answered first; broadcasts do not cross
+        subnets anyway, so the alternative is not reaching both, it is reaching
+        neither reliably. _refresh_routes releases the lock again.
         """
-        if self._locked_route is not None or not self._routes:
-            return
-        for route in self._routes:
-            if route.contains(ip):
-                self._locked_route = route
-                logger.info("broadcasting to %s (a device answered from %s)",
-                            route.addr, ip)
+        with self._route_lock:
+            locked = self._locked_route
+            if locked is not None:
+                if locked.contains(ip):
+                    self._locked_route_seen_at = time.monotonic()
                 return
+            for route in self._routes:
+                if route.contains(ip):
+                    self._locked_route_seen_at = time.monotonic()
+                    self._locked_route = route
+                    logger.info("broadcasting to %s (a device answered from %s)",
+                                route.addr, ip)
+                    return
+
+    def _refresh_routes(self) -> None:
+        """Follow the host's networks, and let go of a lock that went stale.
+
+        A lock that lasted until the socket was reopened broke a session for
+        good when the PC moved to another Wi-Fi network: every PING still went
+        to the old subnet, devices on the new one were never found, and only a
+        restart recovered (contracts message-format.md §2.1).
+
+        The lock is released when its network is no longer among the host's
+        interfaces, or when no device has answered from it for ``route_ttl`` —
+        the latter catches a switch the interface list cannot show, such as a
+        new network that reuses the old subnet number. The next PING then fans
+        out again and the first PONG locks anew.
+        """
+        if not self._auto_routes:
+            return
+        now = time.monotonic()
+        routes: Optional[List[BroadcastRoute]] = None
+        if now - self._routes_enumerated_at >= ROUTE_REFRESH_MIN_INTERVAL:
+            routes = enumerate_broadcast_routes()
+        with self._route_lock:
+            if routes is not None:
+                self._routes_enumerated_at = now
+                if [r.addr for r in routes] != [r.addr for r in self._routes]:
+                    logger.info("local networks changed; discovery now goes to %s",
+                                ", ".join(r.addr for r in routes))
+                self._routes = routes
+            locked = self._locked_route
+            if locked is None:
+                return
+            if not any(route.same_subnet(locked) for route in self._routes):
+                reason = "that network is gone"
+            elif now - self._locked_route_seen_at > self.route_ttl:
+                reason = "no device answered from it for %.0f s" % self.route_ttl
+            else:
+                return
+            self._locked_route = None
+        logger.info("no longer broadcasting to %s only (%s); probing every "
+                    "local network again", locked.addr, reason)
 
     def send_many(self, packet: bytes, addrs: Iterable[str]) -> bool:
         """Unicast the same packet to several devices.
