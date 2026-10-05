@@ -2,7 +2,9 @@
 
 `hapbeat-python-sdk`（import 名: `hapbeat`）の主要な変更点をまとめます。
 
-## Unreleased
+## 0.3.0 — stream session v2 対応・マルチホーム環境での修正
+
+**ファーム 0.5.0 以上（stream session v2）の機器へ stream するには 0.3.0 以上が必要**（0.2.0 以前の stream はファーム 0.5.0 に捨てられ振動しない。旧ファームの機器へは従来どおり送れる）。最低版の一覧は contracts `specs/stream-session-v2.md` の Minimum versions 節。
 
 ### 追加
 - WifiUdp streaming を `StreamHub` に統合した。複数の PCM / clip source を
@@ -42,11 +44,11 @@
   stereo で約 210 ms かかり GIL を握っていた（連続した `stream_pcm` の開始遅延・mixer の
   送出遅れ）。`array` によるコピーにして 5 ms 程度にした（結果は同一）。
 
-## 0.3.0 — マルチホーム環境での探索・送信の修正
+### マルチホーム環境での探索・送信の修正
 
 Unity SDK v0.4.0 で確定した接続まわりの修正を移植した。
 
-### 修正
+#### 修正
 - **マルチホーム PC でデバイスを 1 台も発見できない問題**を修正した。
   `255.255.255.255`（limited broadcast）は**インターフェイスメトリックが最小の
   1 本からしか送出されない**。Hyper-V / WSL2 / Docker を入れると作られる仮想
@@ -76,7 +78,7 @@ Unity SDK v0.4.0 で確定した接続まわりの修正を移植した。
   （Bluetooth PAN や Wi-Fi Direct のアダプタはブロードキャストを運べない）なので
   警告しない。全宛先が失敗した場合のみ警告する。
 
-### 追加
+#### 追加
 - `hapbeat.netif.local_ipv4_subnets()` — ローカル IPv4 とプレフィックス長を返す。
   標準ライブラリのみ（Windows は `GetAdaptersAddresses`、Linux/macOS/BSD は
   `getifaddrs` を ctypes 経由で呼ぶ）。取得できないプラットフォームでは空を返し、
@@ -84,7 +86,7 @@ Unity SDK v0.4.0 で確定した接続まわりの修正を移植した。
 - `Hapbeat.discover(..., stop_early=True)` — 最初の 1 台が応答した時点で返す。
   LAN の棚卸しではなく「次のパケットの宛先を決める」用途向け。
 
-### 検証
+#### 検証
 - pytest 149 件（マルチホーム宛先算出・重複排除・探索と再生の経路分離・ログ抑制を含む）
 - Windows 実機で `netif` の出力が `ifaddr` パッケージと完全一致することを確認
 - **Hapbeat 実機（duo_wl_v3 / fw 0.3.1）で疎通確認済み**:
