@@ -11,6 +11,7 @@ dependencies beyond the SDK itself -- copy it out and make it yours.
 
 | Sample | For | Highlights | Kit needs | Default event |
 |---|---|---|---|---|
+| [quickstart_clip.py](quickstart_clip.py) | everyone, start here | **no kit needed**: `connect()` then `play_clip_file()` streams the bundled [hit_80hz.wav](hit_80hz.wav) | none (WAV bundled) | n/a |
 | [minimal.py](minimal.py) | everyone | the smallest possible script: discover, play, stop | 1 short one-shot | `sample-kit.sine_100hz` |
 | [clip_project/](clip_project/) | app authors | **project layout**: kit-in-project, `play(id)` auto-branches command vs clip (streamed WAV), plus an ad-hoc `stream_pcm` cue | a kit folder | n/a |
 | [osc_remote/](osc_remote/) | live / exhibitions | **OSC bridge**: phone (TouchOSC) as a wireless haptic remote; a *haptic file* gives each event a target; sender demo to test without a phone | a kit + haptic file | n/a |
