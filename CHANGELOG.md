@@ -2,6 +2,31 @@
 
 `hapbeat-python-sdk`（import 名: `hapbeat`）の主要な変更点をまとめます。
 
+## Unreleased（1.0.0 に含める）
+
+全製品の通信を 1.x にそろえる変更（DEC-096）。対応する contracts は 1.0.0（未 tag。`46f246e` 時点）。開発版は `1.0.0.dev1`。
+
+### 追加
+- 能力申告: 照合済みの PONG を初めて受けた機器、`firmware_version`・`device_boot_id` が変わった機器へ CAPS_REQ（0x12）を unicast で送り、CAPS（0x13）を `Device.caps`（`DeviceCaps`）に入れる。応答が無ければ 500 ms ごとに計 3 回送り、その後は `DeviceCaps.NONE`（能力申告なし）として、その boot の間は再要求しない。SDK の major（`protocol.SDK_MAJOR`）より新しい `generation` の機器を見つけたら、SDK の更新を促す警告を 1 回出す。
+- ERROR（0xFF）の受信: 既知の機器の UDP 7700 から届き、stream の code は追跡中の session（今のもの・直前に終えたもの）の envelope と一致するものだけを、endpoint ごとに扱う。STREAM_LEASE_INVALID は lease を取り直して新しい世代で続きから、STREAM_SUPERSEDED は保留、STREAM_NOT_STARTED は同じ BEGIN を即時に再送、STREAM_TIMED_OUT は次の世代で続きから、STREAM_STOPPED はその機器から source を外す（同じ Playback は戻らない、他の機器では続く）、STREAM_TARGET_MISMATCH は endpoint を解決し直す、STREAM_GEN_UNSUPPORTED は分類し直す。CAPS_REQ への UNKNOWN_COMMAND は能力申告なし。
+- 公開 API: `DeferredReason` に `UNKNOWN_CLASS`・`LEASE_UNAVAILABLE`・`SUPERSEDED` を追加（複数の機器で違うときは Superseded > LeaseUnavailable > UnknownClass > NoResolvedEndpoint）。`Device.stream_class`（`EndpointClass.GEN1 / GEN2 / UNKNOWN`）、`Hapbeat.stream_endpoints()`（`StreamEndpointInfo`）、`add_stream_endpoint_listener()` / `remove_stream_endpoint_listener()`、`LeaseState`、`DeviceCaps` を追加。
+- Stream Gen 2 の BEGIN を最初の 3 つの DATA の前に再送し、session の間は 500 ms 以内ごとに再送する（Stream Gen 1 の機器には再送しない）。
+- 自分の送信が 3 s 以上止まった後は、新しい世代で BEGIN してから DATA を送る。
+- 差し替え（re-splice）: 送り済みのブロックの中に始まる source を足すとき、Stream Gen 2 の機器に 40 ms 以上たまっている見込みなら、今の世代を END して同じ lease の次の世代で作り直した混合をすぐに送る（新しい source が send-ahead の分だけ遅れない）。
+- モーター 1 個の機器（CAPS の `haptic_channels` が 1）では、source の pan を適用せずに混合する。
+- lease の世代を使い切ったら、新しい incarnation で lease を取り直す。
+
+### 変更
+- 探索・keep-alive の PING を 8 byte に戻し、lease を求める 16 byte の拡張 PING は stream する（する見込みの）機器へ unicast だけで送る。lease は TTL の 1/3（CAPS の `lease_ttl_s` / 3、無ければ 5 s）ごとに更新し、最後の session の後も 15 s 保つ。8 byte の PING への応答では機器の分類を変えない。keep-alive の間隔を Stream Gen 2 の機器のために縮める処理は削除した。
+- PONG の lease tail を 1.x の規則で読む: 32 byte 以上・`HBS2`・extension_version 1 なら Stream Gen 2（先頭 32 byte だけ読み、reserved と未知の flag は見ない）、何も無ければ Stream Gen 1、それ以外は無視（`LEASE_TAIL_IGNORED`。機器ごとに 1 回警告）。
+- superseded の保留は、`lease_reissued` の付いた有効な lease（機器が再発行した ticket）か `reacquire_stream_ownership()` でだけ解く。
+- 同じ boot で ticket が替わった（lease の再発行・lease の取り直し）とき、有限の source を cursor から続ける（先頭から鳴らし直さない）。
+- Stream Gen 1 の機器の 300 ms guard を待つ間の Playback は Deferred ではなく Active とする。
+- 呼び方を contracts（versioning.md §4）に合わせた: `EndpointClass.V2 / LEGACY` → `GEN2 / GEN1`、`LEASE_TAIL_MALFORMED` → `LEASE_TAIL_IGNORED`、`V2_LEASE_REFRESH_INTERVAL` → `LEASE_REFRESH_INTERVAL`。参照先の `stream-session-v2.md` は `stream-session.md` に。
+
+### 修正
+- `parse_pong` が datagram 全体ではなく header の `payload_length` の範囲だけを payload として読む。
+
 ## 0.3.0 — stream session v2 対応・マルチホーム環境での修正
 
 **ファーム 0.5.0 以上（stream session v2）の機器へ stream するには 0.3.0 以上が必要**（0.2.0 以前の stream はファーム 0.5.0 に捨てられ振動しない。旧ファームの機器へは従来どおり送れる）。最低版の一覧は contracts `specs/stream-session-v2.md` の Minimum versions 節。

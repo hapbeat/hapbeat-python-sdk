@@ -91,7 +91,12 @@ rain.stop()                  # stops this source without stopping siblings
 ```
 
 PCM16 clips are normalized to 16 kHz stereo and mixed per device endpoint. A
-clip remains Deferred until a matching PONG-reported endpoint exists. Full example:
+clip remains Deferred until a matching PONG-reported endpoint exists and has
+given the SDK a stream lease; `rain.deferred_reason` tells which
+(`NO_RESOLVED_ENDPOINT`, `UNKNOWN_CLASS`, `LEASE_UNAVAILABLE`, `SUPERSEDED`).
+`hb.stream_endpoints()` lists each device's stream class and lease state; a
+device another app took over (`SUPERSEDED`) is handed back when that app stops,
+or at once with `hb.reacquire_stream_ownership()`. Full example:
 [examples/clip_project](https://github.com/hapbeat/hapbeat-python-sdk/tree/master/examples/clip_project).
 
 ## Next steps

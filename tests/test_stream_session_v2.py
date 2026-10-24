@@ -1,7 +1,8 @@
-"""Stream session v2 (contracts stream-session-v2.md, sdk-multi-stream.md
+"""Stream Gen 2 (contracts stream-session.md, sdk-multi-stream.md
 §6.8-6.9 / §7 case 6) with a fake transport: wire vectors, per-device class
-detection from matched replies, lease + generation lifecycle, the legacy
-fallback and its per-device 300 ms guard. No sockets, no live haptics."""
+detection from matched replies, lease + generation lifecycle, the Stream Gen 1
+fallback and its per-device 300 ms guard. No sockets, no live haptics.
+The 1.x additions (DEC-096) are in test_wire_1x.py."""
 
 from __future__ import annotations
 
@@ -22,11 +23,7 @@ from hapbeat.stream import (
     StreamEndpoint,
     StreamHub,
 )
-from hapbeat.stream_lease import (
-    EndpointClass,
-    StreamLease,
-    V2_LEASE_REFRESH_INTERVAL,
-)
+from hapbeat.stream_lease import EndpointClass, StreamLease
 
 from .pong_helpers import SUPERSEDED, last_ping, lease_tail, pong_packet, reply
 from .test_hapbeat import fake_client  # noqa: F401 (pytest fixture)
@@ -128,17 +125,22 @@ def test_legacy_v1_stream_has_no_envelope():
 
 
 # ── extended PING / PONG tail ───────────────────────────────────────
-def test_extended_ping_carries_incarnation_and_strictly_increasing_timestamps(fake_client):  # noqa: F811
+def test_discovery_ping_is_8_bytes_and_lease_ping_is_16_bytes_unicast(fake_client):  # noqa: F811
     hb = make_hb()
     try:
         hb.ping()
-        hb.ping()
-        first, second = hb._client.discovery_sent[-2:]
-        p1, p2 = decode(first)["payload"], decode(second)["payload"]
+        hb._lease_ping("192.0.2.10")
+        hb._lease_ping("192.0.2.10")
+        discovery = decode(hb._client.discovery_sent[-1])["payload"]
+        assert len(discovery) == 8
+        leases = [(decode(p)["payload"], addr) for p, addr in hb._client.sent
+                  if decode(p)["cmd"] == protocol.CMD_PING]
+        assert [addr for _, addr in leases] == ["192.0.2.10", "192.0.2.10"]
+        (p1, _), (p2, _) = leases
         assert len(p1) == len(p2) == 16
         ts1, inc1 = struct.unpack("<qQ", p1)
         ts2, inc2 = struct.unpack("<qQ", p2)
-        assert ts2 > ts1
+        assert ts2 > ts1 > struct.unpack("<q", discovery)[0]
         assert inc1 == inc2 == hb._client_incarnation != 0
     finally:
         hb.close()
@@ -170,22 +172,26 @@ def test_parse_pong_classifies_the_lease_tail():
     assert not tail_of(lease_tail(9, 0xAB, 0))["lease_valid"]
 
     assert tail_of(b"")["lease_tail"] == protocol.LEASE_TAIL_ABSENT
-    assert tail_of(b"\x07xyz")["lease_tail"] == protocol.LEASE_TAIL_ABSENT
     bare = protocol.parse_pong(protocol.build_header(protocol.CMD_PONG, 1, 16)
                                + struct.pack("<qq", 5, 1))
     assert bare["lease_tail"] == protocol.LEASE_TAIL_ABSENT
 
-    # only the full HBS2 marker counts as a marker: a truncated prefix after
-    # volume_wiper is "no marker" (legacy), not a malformed tail
-    for prefix in (b"H", b"HB", b"HBS"):
-        assert tail_of(prefix)["lease_tail"] == protocol.LEASE_TAIL_ABSENT
-
+    # 1.x rules: any bytes after volume_wiper that are not a readable tail are
+    # ignored (no class change), including a truncated marker
     good = lease_tail(9, 0xAB, 4)
-    for bad in (good[:-1], good + b"\x00", b"HBS2",
-                lease_tail(9, 0xAB, 4, version=2),
-                lease_tail(9, 0xAB, 4, reserved=1),
-                lease_tail(9, 0xAB, 4, flags=0x05)):
-        assert tail_of(bad)["lease_tail"] == protocol.LEASE_TAIL_MALFORMED
+    for bad in (b"\x07xyz", b"H", b"HB", b"HBS", good[:-1], b"HBS2",
+                lease_tail(9, 0xAB, 4, version=2)):
+        assert tail_of(bad)["lease_tail"] == protocol.LEASE_TAIL_IGNORED
+
+    # a longer tail, reserved != 0 and unknown flag bits still read as Gen 2
+    for future in (good + b"\x00", lease_tail(9, 0xAB, 4, reserved=1),
+                   lease_tail(9, 0xAB, 4, flags=0x09)):
+        parsed = tail_of(future)
+        assert parsed["lease_tail"] == protocol.LEASE_TAIL_VALID
+        assert parsed["lease_ticket"] == 4 and parsed["lease_valid"]
+    reissued = tail_of(lease_tail(9, 0xAB, 4, flags=0x05))
+    assert reissued["lease_tail"] == protocol.LEASE_TAIL_VALID
+    assert reissued["lease_reissued"] and not tail_of(good)["lease_reissued"]
 
 
 # ── class detection rules ───────────────────────────────────────────
@@ -214,7 +220,7 @@ def test_unsolicited_and_unmatched_pongs_never_classify(fake_client):  # noqa: F
         hb.close()
 
 
-def test_malformed_tail_leaves_the_device_pending(fake_client):  # noqa: F811
+def test_ignored_tail_leaves_the_device_pending(fake_client):  # noqa: F811
     hb = make_hb()
     try:
         ip = "192.0.2.10"
@@ -225,13 +231,13 @@ def test_malformed_tail_leaves_the_device_pending(fake_client):  # noqa: F811
         hb.close()
 
 
-def test_matched_reply_without_tail_is_legacy_and_with_tail_is_v2(fake_client):  # noqa: F811
+def test_matched_reply_without_tail_is_gen1_and_with_tail_is_gen2(fake_client):  # noqa: F811
     hb = make_hb()
     try:
         reply(hb, "192.0.2.10", "player_1/left")
         reply(hb, "192.0.2.11", "player_1/right", lease=(0xB0, 3))
-        assert _class(hb, "192.0.2.10") is EndpointClass.LEGACY
-        assert _class(hb, "192.0.2.11") is EndpointClass.V2
+        assert _class(hb, "192.0.2.10") is EndpointClass.GEN1
+        assert _class(hb, "192.0.2.11") is EndpointClass.GEN2
         playback = hb.stream_pcm(LOOP_PCM, loop=True)
         _wait_until(lambda: of(stream_log(hb, "192.0.2.10"), protocol.CMD_STREAM_DATA)
                     and of(stream_log(hb, "192.0.2.11"), protocol.CMD_STREAM_DATA))
@@ -249,14 +255,14 @@ def test_late_old_boot_reply_does_not_roll_the_lease_back(fake_client):  # noqa:
     hb = make_hb()
     try:
         ip, address = "192.0.2.10", "player_1/chest"
-        hb.ping()
-        old_ping = last_ping(hb)
+        hb._lease_ping(ip)
+        old_ping = last_ping(hb, ip)
         reply(hb, ip, address, lease=(0xB2, 1))      # newer request, new boot
         # the older request's reply arrives late: old boot / legacy-looking
         reply(hb, ip, "player_9/stale", lease=(0xB1, 5), ping=old_ping)
         reply(hb, ip, address, ping=old_ping)
         state = hb._stream_states[ip]
-        assert state.endpoint_class is EndpointClass.V2
+        assert state.endpoint_class is EndpointClass.GEN2
         assert state.lease == StreamLease(0xB2, 1)
         # a discarded HBS2 reply does not roll the address back either
         assert hb.devices[0].address == address
@@ -279,8 +285,8 @@ def test_reply_for_another_incarnation_is_discarded(fake_client):  # noqa: F811
     hb = make_hb()
     try:
         ip = "192.0.2.10"
-        hb.ping()
-        seq, ts, inc = last_ping(hb)
+        hb._lease_ping(ip)
+        seq, ts, inc = last_ping(hb, ip)
         tail = lease_tail(inc ^ 1, 0xB1, 2)
         reply(hb, ip, "player_1/chest", tail=tail, ping=(seq, ts, inc))
         assert hb.devices == []  # whole PONG dropped
@@ -293,27 +299,14 @@ def test_invalid_or_superseded_lease_defers_and_is_never_legacy(fake_client):  #
     try:
         reply(hb, "192.0.2.10", "player_1/a", lease=(0xB1, 2), flags=0)
         reply(hb, "192.0.2.11", "player_1/b", lease=(0xB1, 3), flags=1 | SUPERSEDED)
-        assert _class(hb, "192.0.2.10") is EndpointClass.V2
-        assert _class(hb, "192.0.2.11") is EndpointClass.V2
+        assert _class(hb, "192.0.2.10") is EndpointClass.GEN2
+        assert _class(hb, "192.0.2.11") is EndpointClass.GEN2
         assert hb.stream_pcm(LOOP_PCM, loop=True).status is PlaybackStatus.DEFERRED
         # a later periodic reply of the same incarnation keeps the latch
         reply(hb, "192.0.2.11", "player_1/b", lease=(0xB1, 3))
         assert hb._stream_states["192.0.2.11"].lease_superseded
         time.sleep(0.05)
         assert stream_log(hb) == []
-    finally:
-        hb.close()
-
-
-def test_keepalive_is_capped_while_a_device_is_v2(fake_client):  # noqa: F811
-    hb = hapbeat_mod.Hapbeat(keepalive=False, keepalive_interval=30.0).open()
-    try:
-        # nothing classified yet: a device may turn out to be v2 (15 s lease)
-        assert hb._keepalive_wait() == V2_LEASE_REFRESH_INTERVAL
-        reply(hb, "192.0.2.10", "player_1/a")
-        assert hb._keepalive_wait() == 30.0
-        reply(hb, "192.0.2.11", "player_1/b", lease=(0xB1, 1))
-        assert hb._keepalive_wait() == V2_LEASE_REFRESH_INTERVAL
     finally:
         hb.close()
 
@@ -336,7 +329,7 @@ def test_routing_fixture_over_v2_devices(fake_client):  # noqa: F811
             ip = devices[session["endpoint_id"]]["ip"]
             _wait_until(lambda ip=ip: of(stream_log(hb, ip), protocol.CMD_STREAM_DATA))
             begins = of(stream_log(hb, ip), protocol.CMD_STREAM_BEGIN)
-            assert len(begins) == 1
+            assert len({b["identity"] for b in begins}) == 1  # repeats are the same BEGIN
             assert begin_target(begins[0]) == session["stream_begin_target"]
         for playback in playbacks.values():
             playback.stop()
@@ -373,6 +366,16 @@ class RecordingSink:
     def kinds(self, endpoint, kind):
         return [e for e in self.events if e[1] == endpoint and e[0] == kind]
 
+    def sessions(self, endpoint):
+        """The first BEGIN of each session (Stream Gen 2 repeats its BEGIN)."""
+        firsts, seen = [], set()
+        for event in self.kinds(endpoint, "begin"):
+            key = event[2] if event[2] is not None else ("gen1", len(firsts))
+            if event[2] is None or key not in seen:
+                seen.add(key)
+                firsts.append(event)
+        return firsts
+
 
 V2_EP = StreamEndpoint("192.0.2.20", "player_1/v2")
 LEGACY_EP = StreamEndpoint("192.0.2.21", "player_1/legacy")
@@ -392,7 +395,7 @@ def test_v2_restarts_immediately_after_end_with_the_next_generation():
         _wait_until(lambda: sink.kinds(V2_EP, "end"))
         second = hub.play_pcm(SHORT_PCM, target="player_1")
         # BEGIN goes out synchronously inside play_pcm: no 300 ms cooldown
-        begins = sink.kinds(V2_EP, "begin")
+        begins = sink.sessions(V2_EP)
         assert len(begins) == 2
         assert begins[1][4] - sink.kinds(V2_EP, "end")[0][4] < 0.1
         assert second.status is not PlaybackStatus.DEFERRED
@@ -413,7 +416,7 @@ def test_legacy_guard_applies_only_to_the_legacy_endpoint():
         _wait_until(lambda: sink.kinds(V2_EP, "end") and sink.kinds(LEGACY_EP, "end"))
         legacy_end = sink.kinds(LEGACY_EP, "end")[0][4]
         hub.play_pcm(SHORT_PCM, target="player_1")
-        assert len(sink.kinds(V2_EP, "begin")) == 2        # immediate
+        assert len(sink.sessions(V2_EP)) == 2              # immediate
         assert len(sink.kinds(LEGACY_EP, "begin")) == 1    # guarded
         _wait_until(lambda: len(sink.kinds(LEGACY_EP, "begin")) == 2)
         assert sink.kinds(LEGACY_EP, "begin")[1][4] - legacy_end >= LEGACY_END_TO_BEGIN_GUARD
@@ -663,7 +666,7 @@ def test_reacquire_stream_ownership_retakes_a_superseded_lease(fake_client):  # 
         assert playback.status is PlaybackStatus.ACTIVE
         _wait_until(lambda: of(stream_log(hb, ip)[mark:], protocol.CMD_STREAM_DATA))
         begins = of(stream_log(hb, ip)[mark:], protocol.CMD_STREAM_BEGIN)
-        assert [b["identity"][:2] for b in begins] == [(0xB1, 5)]
+        assert {b["identity"][:2] for b in begins} == {(0xB1, 5)}
     finally:
         hb.close()
 

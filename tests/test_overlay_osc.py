@@ -85,6 +85,8 @@ class FakeUdpClient:
 
     def add_pong_listener(self, cb): pass
     def remove_pong_listener(self, cb): pass
+    def add_packet_listener(self, cb): pass
+    def remove_packet_listener(self, cb): pass
     def open(self): pass
     def close(self): pass
 

@@ -80,6 +80,21 @@ Pass `connect(unicast=False)` to always broadcast — worth it when many devices
 must fire in lockstep, since one broadcast reaches them all at once while N
 unicasts go out one after another.
 
+A clip stream needs a stream lease from each device. The SDK requests it by
+unicast only from the devices it streams to (and keeps it for 15 s after the
+last stream), so other applications on the LAN are unaffected. While a stream
+cannot start, `playback.deferred_reason` says why: `NO_RESOLVED_ENDPOINT` (no
+device matches the target yet), `UNKNOWN_CLASS` (the device has not answered
+the lease request yet), `LEASE_UNAVAILABLE` (the lease is being renewed) or
+`SUPERSEDED` (another application started streaming to that device later).
+`hb.stream_endpoints()` / `add_stream_endpoint_listener()` report each device's
+stream class (`Device.stream_class`) and lease state, and `Device.caps` holds
+what the device reported about itself (`None` until it answers; `DeviceCaps.NONE`
+for firmware that predates capability reports). A superseded device is handed
+back automatically once the other application stops; call
+`hb.reacquire_stream_ownership()` to take it back while that application is
+still running.
+
 ## EventMap — the tuning side (optional)
 
 Keep per-event default gains in one place and let `play("id")` resolve them,

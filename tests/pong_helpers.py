@@ -1,5 +1,5 @@
 """Build device PONG replies for tests (no sockets): matched replies to the
-SDK's own extended PING, with or without the stream-session-v2 HBS2 tail."""
+SDK's own unicast extended PING, with or without the Stream Gen 2 HBS2 tail."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from hapbeat import protocol
 
 VALID = protocol.STREAM_LEASE_FLAG_VALID
 SUPERSEDED = protocol.STREAM_LEASE_FLAG_SUPERSEDED
+REISSUED = protocol.STREAM_LEASE_FLAG_REISSUED
 
 
 def lease_tail(
@@ -30,18 +31,23 @@ def lease_tail(
 
 
 def pong_packet(
-    seq: int, timestamp: int, address: str, tail: bytes = b""
+    seq: int, timestamp: int, address: str, tail: bytes = b"", firmware: str = "v1"
 ) -> bytes:
     payload = struct.pack("<qq", timestamp, 1)
-    payload += b"hb\x00" + address.encode() + b"\x00v1\x00" + bytes([5, 50])
-    payload += tail
+    payload += b"hb\x00" + address.encode() + b"\x00" + firmware.encode() + b"\x00"
+    payload += bytes([5, 50]) + tail
     return protocol.build_header(protocol.CMD_PONG, seq, len(payload)) + payload
 
 
-def last_ping(hb) -> tuple[int, int, int]:
-    """(seq, timestamp, incarnation) of the newest outstanding PING."""
-    seq, pending = max(hb._pending_pings.items(), key=lambda kv: kv[1].timestamp_us)
-    return seq, pending.timestamp_us, pending.client_incarnation
+def last_ping(hb, ip: Optional[str] = None) -> tuple[int, int, int]:
+    """(seq, timestamp, incarnation) of the newest outstanding PING; with
+    ``ip``, of the newest extended (lease) PING sent to that address."""
+    pending = [
+        (seq, ping) for seq, ping in hb._pending_pings.items()
+        if ip is None or (ping.extended and ping.ip == ip)
+    ]
+    seq, newest = max(pending, key=lambda kv: kv[1].timestamp_us)
+    return seq, newest.timestamp_us, newest.client_incarnation
 
 
 def reply(
@@ -51,21 +57,27 @@ def reply(
     *,
     lease: Optional[tuple[int, int]] = None,
     flags: int = VALID,
+    high_water: int = 0,
     tail: Optional[bytes] = None,
     ping: Optional[tuple[int, int, int]] = None,
+    firmware: str = "v1",
 ) -> dict:
-    """Deliver a direct reply to ``ping`` (default: a fresh ``hb.ping()``).
+    """Deliver a direct reply to ``ping`` (default: a fresh unicast lease PING
+    ``hb._lease_ping(ip)``).
 
-    ``lease=(boot_id, ticket)`` answers like v2 firmware (HBS2 tail echoing
-    the PING's incarnation); without it like pre-v2 firmware. ``tail``
+    ``lease=(boot_id, ticket)`` answers like Stream Gen 2 firmware (HBS2 tail
+    echoing the PING's incarnation); without it like older firmware. ``tail``
     overrides the raw bytes after volume_wiper.
     """
     if ping is None:
-        hb.ping()
-        ping = last_ping(hb)
+        hb._lease_ping(ip)
+        ping = last_ping(hb, ip)
     seq, timestamp, incarnation = ping
     if tail is None:
-        tail = b"" if lease is None else lease_tail(incarnation, *lease, flags=flags)
-    pong = protocol.parse_pong(pong_packet(seq, timestamp, address, tail))
+        tail = (
+            b"" if lease is None
+            else lease_tail(incarnation, *lease, flags=flags, high_water=high_water)
+        )
+    pong = protocol.parse_pong(pong_packet(seq, timestamp, address, tail, firmware))
     hb._on_pong(pong, ip)
     return pong

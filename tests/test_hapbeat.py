@@ -23,6 +23,7 @@ class FakeUdpClient:
         self.bind_port = bind_port  # matches UdpClient: default 0 = ephemeral
         self.broadcast_addr = broadcast_addr
         self.listeners = []
+        self.packet_listeners = []
         self.open_calls = 0
         self.sent = []
         # Packets that took the discovery fan-out. Kept apart from `sent` so a
@@ -42,6 +43,15 @@ class FakeUdpClient:
     def remove_pong_listener(self, cb):
         try:
             self.listeners.remove(cb)
+        except ValueError:
+            pass
+
+    def add_packet_listener(self, cb):
+        self.packet_listeners.append(cb)
+
+    def remove_packet_listener(self, cb):
+        try:
+            self.packet_listeners.remove(cb)
         except ValueError:
             pass
 

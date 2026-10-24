@@ -57,6 +57,8 @@ class FakeUdpClient:
 
     def add_pong_listener(self, cb): pass
     def remove_pong_listener(self, cb): pass
+    def add_packet_listener(self, cb): pass
+    def remove_packet_listener(self, cb): pass
     def open(self): pass
     def close(self): pass
 
@@ -212,7 +214,9 @@ def test_source_after_end_waits_one_beacon_before_new_begin():
         _wait_until(lambda: sink.ends == [endpoint])
 
         second = hub.play_pcm(struct.pack("<h", 2000) * 64, target="player_1")
-        assert second.status is PlaybackStatus.DEFERRED
+        # waiting out the Stream Gen 1 guard is not Deferred (sdk-multi-stream.md §3)
+        assert second.status is PlaybackStatus.ACTIVE
+        assert second.deferred_reason is None
         assert sink.begins == [endpoint]
         time.sleep(0.2)
         assert sink.begins == [endpoint]

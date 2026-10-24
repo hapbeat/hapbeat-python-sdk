@@ -39,6 +39,8 @@ DEFAULT_PORT = 7700
 DEFAULT_BROADCAST = "255.255.255.255"
 
 PongCallback = Callable[[dict, str], None]
+# (command, seq, payload, (ip, port)) for CAPS and ERROR datagrams
+PacketCallback = Callable[[int, int, bytes, tuple], None]
 
 # Stand-in "destination" for the case where a whole fan-out failed, so that
 # outage gets the same once-per-outage treatment as a single address.
@@ -158,6 +160,7 @@ class UdpClient:
         # once rather than once per packet. See _note_send_failed.
         self._failed_destinations: set[str] = set()
         self._pong_callbacks: list[PongCallback] = []
+        self._packet_callbacks: list[PacketCallback] = []
 
     # ── Lifecycle ───────────────────────────────────────────────────
     def open(self) -> None:
@@ -235,6 +238,17 @@ class UdpClient:
     def remove_pong_listener(self, cb: PongCallback) -> None:
         try:
             self._pong_callbacks.remove(cb)
+        except ValueError:
+            pass
+
+    def add_packet_listener(self, cb: PacketCallback) -> None:
+        """Receive CAPS and ERROR datagrams as ``cb(command, seq, payload,
+        (ip, port))``; the sender port is needed to accept an ERROR."""
+        self._packet_callbacks.append(cb)
+
+    def remove_packet_listener(self, cb: PacketCallback) -> None:
+        try:
+            self._packet_callbacks.remove(cb)
         except ValueError:
             pass
 
@@ -398,6 +412,7 @@ class UdpClient:
                 continue
             pong = protocol.parse_pong(data)
             if pong is None:
+                self._dispatch_packet(data, addr)
                 continue
             ip = addr[0]
             # A reply proves which subnet the device is really on. Until this
@@ -409,3 +424,15 @@ class UdpClient:
                     cb(pong, ip)
                 except Exception:  # noqa: BLE001 — never let a listener kill the loop
                     logger.exception("pong listener raised")
+
+    def _dispatch_packet(self, data: bytes, addr: tuple) -> None:
+        """Hand a CAPS / ERROR datagram to the packet listeners."""
+        parsed = protocol.parse_packet(data)
+        if parsed is None or parsed[0] not in (protocol.CMD_CAPS, protocol.CMD_ERROR):
+            return
+        command, seq, payload = parsed
+        for cb in list(self._packet_callbacks):
+            try:
+                cb(command, seq, payload, addr)
+            except Exception:  # noqa: BLE001 — never let a listener kill the loop
+                logger.exception("packet listener raised")

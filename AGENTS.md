@@ -58,7 +58,9 @@ with hapbeat.connect(app_name="MyApp") as hb:   # context manager closes cleanly
 - PLAY / STOP / STOP_ALL are **unicast** to devices that answered a recent
   PING; broadcast is the command fallback while none is known. Clip streams
   require an exact PONG-reported endpoint and remain Deferred otherwise;
-  STREAM_BEGIN / DATA / END are never broadcast.
+  STREAM_BEGIN / DATA / END are never broadcast. The stream lease is requested
+  by a unicast 16-byte PING only to devices being streamed to (kept 15 s after
+  the last stream); the discovery PING is 8 bytes.
   APs delay broadcast frames up to one DTIM beacon (100–300 ms) whenever any
   client on the AP is power-saving. `connect(unicast=False)` forces broadcast
   (better when many devices must fire in lockstep); `device_ttl` sets how long
@@ -186,6 +188,18 @@ the phone targets — not the device's UDP 7700.
   loop / idempotent stop. Stopping one source does not stop siblings.
 - Unknown targets are `Deferred(NoResolvedEndpoint)` until discovery resolves
   them. No STREAM packet uses broadcast.
+- Other `deferred_reason` values: `UNKNOWN_CLASS` (device has not answered the
+  lease request yet), `LEASE_UNAVAILABLE` (lease being renewed),
+  `SUPERSEDED` (another app streamed to that device later). Highest wins:
+  Superseded > LeaseUnavailable > UnknownClass > NoResolvedEndpoint.
+- `hb.stream_endpoints()` → `StreamEndpointInfo(address, ip, stream_class,
+  lease_state)`; `add_stream_endpoint_listener(cb)` is called on changes.
+  `Device.stream_class` is `EndpointClass.GEN1 / GEN2 / UNKNOWN`; `Device.caps`
+  is the device's `DeviceCaps` (None until answered, `DeviceCaps.NONE` for
+  firmware without capability reports).
+- A superseded device is handed back automatically (`lease_reissued`) once the
+  other app stops. `hb.reacquire_stream_ownership()` takes it back at once —
+  call it only on an explicit user request, never in a loop.
 
 ## Best practices
 

@@ -18,7 +18,14 @@ from __future__ import annotations
 from . import protocol
 from .client import DEFAULT_BROADCAST, DEFAULT_PORT, UdpClient
 from .eventmap import EventDef, EventMap
-from .hapbeat import Device, Hapbeat, connect
+from .hapbeat import (
+    Device,
+    DeviceCaps,
+    Hapbeat,
+    LeaseState,
+    StreamEndpointInfo,
+    connect,
+)
 from .stream import (
     DeferredReason,
     PlaybackStatus,
@@ -26,6 +33,7 @@ from .stream import (
     StreamHub,
     StreamPlayback,
 )
+from .stream_lease import EndpointClass
 from .wav import WavPcm, read_wav_pcm16
 
 try:  # populated from installed package metadata
@@ -34,14 +42,18 @@ try:  # populated from installed package metadata
     try:
         __version__ = version("hapbeat-python-sdk")
     except PackageNotFoundError:  # running from a source checkout
-        __version__ = "0.3.0+local"
+        __version__ = "1.0.0.dev1+local"
 except ImportError:  # pragma: no cover
-    __version__ = "0.3.0+local"
+    __version__ = "1.0.0.dev1+local"
 
 __all__ = [
     "connect",
     "Hapbeat",
     "Device",
+    "DeviceCaps",
+    "EndpointClass",
+    "LeaseState",
+    "StreamEndpointInfo",
     "EventMap",
     "EventDef",
     "StreamHub",
