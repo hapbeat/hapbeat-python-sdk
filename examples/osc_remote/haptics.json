@@ -1,5 +1,5 @@
 {
-  "_comment": "Haptic file (EventMap overlay). References the kit for intensity/clip; adds per-event target + gain so OSC senders just name an event id.",
+  "_comment": "Haptic file (EventMap overlay). References the kit for clip_gain/clip; adds per-event target + gain (multiplied with clip_gain) so OSC senders just name an event id.",
   "kit": "kits/demo-kit",
   "events": {
     "demo.tap":    { "target": "player_1/chest", "gain": 0.8 },

@@ -40,7 +40,7 @@ import hapbeat
 
 hb = hapbeat.connect(app_name="MyExperiment")  # opens the UDP socket + keep-alive
 hb.play("sample-kit.sine_100hz", gain=0.3)   # fire event "sample-kit.sine_100hz" at gain 0.3
-hb.play("sample-kit.sine_100hz")             # gain omitted -> kit baseline intensity
+hb.play("sample-kit.sine_100hz")             # gain omitted -> 1 (the kit's clip_gain as authored)
 hb.play("sample-kit.sine_100hz", pan=-1)     # pan: -1 left / 0 centre / +1 right
 hb.stop("sample-kit.sine_100hz")
 hb.stop_all()
@@ -97,21 +97,26 @@ still running.
 
 ## EventMap — the tuning side (optional)
 
-Keep per-event default gains in one place and let `play("id")` resolve them,
-so firing code never hard-codes intensities:
+Keep per-event strengths in one place and let `play("id")` resolve them,
+so firing code never hard-codes them:
 
 ```python
 em = hapbeat.EventMap.from_manifest("my-kit/my-kit-manifest.json")
 hb = hapbeat.connect(event_map=em)
-hb.play("sample-kit.sine_100hz")        # uses the kit manifest's intensity for this event
+hb.play("sample-kit.sine_100hz")        # uses the kit manifest's clip_gain for this event
 ```
 
-`EventMap` reads the kit manifest (schema 2.0.0) `intensity` as the baseline
-gain. You can also build one by hand: `EventMap.from_dict({"sample-kit.sine_100hz": 0.5})`.
+`EventMap` reads the kit manifest (schema 2.0.0) `parameters.clip_gain` — the
+material strength of each event (0..1, default 1). The value sent is
+`clamp(clip_gain × app_gain, 0, 1)`, where `app_gain` is the haptic file's
+per-event `gain` times the `gain` you pass to `play`. `gain` multiplies
+`clip_gain` (it never replaces it) and is not capped at 1: on a `clip_gain` of
+0.5, `gain=2` sends 1.0. You can also build an EventMap by hand:
+`EventMap.from_dict({"sample-kit.sine_100hz": 0.5})` (per-event gains, no kit).
 
 ### Haptic file — add targeting on top of the kit
 
-The Studio-generated manifest holds kit content (intensity / clip), but not
+The Studio-generated manifest holds kit content (clip_gain / clip), but not
 app-side concerns like **which device/body part** an event goes to. Put those
 in a *haptic file* (an EventMap overlay that references the kit), so `play(id)`
 resolves the target without the caller passing it:
@@ -137,7 +142,7 @@ matches.
 
 ```python
 hb = hapbeat.connect(app_name="MyApp", haptics="haptics.json")
-hb.play("sample-kit.sine_100hz")     # goes to player_1/pos_neck at gain 0.8 — from the file
+hb.play("sample-kit.sine_100hz")     # goes to player_1/pos_neck at clip_gain × 0.8 — from the file
 ```
 
 ## Two playback modes: command and clip
@@ -150,7 +155,7 @@ The same `play(id)` call branches on the manifest:
 | `stream_events` | **clip** | the SDK reads the WAV from the kit's `stream-clips/` and **streams** it over UDP |
 
 Put the kit inside your project and call events by id — the per-event details
-(intensity, loop, command vs clip, which WAV) live in the kit, not your code:
+(clip_gain, loop, command vs clip, which WAV) live in the kit, not your code:
 
 ```
 my-app/

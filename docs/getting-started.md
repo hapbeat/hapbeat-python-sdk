@@ -41,8 +41,9 @@ hb.close()
 
 - `connect()` opens a UDP broadcast socket and starts a keep-alive so the
   device OLED shows your `app_name`.
-- `play(event_id, gain)` sends a PLAY instruction. `gain` is 0..1; omit it to
-  use the kit's authored intensity.
+- `play(event_id, gain)` sends a PLAY instruction. `gain` is the app gain, a
+  multiplier (0 or more, default 1) on the kit's authored `clip_gain`; the value
+  sent is `clamp(clip_gain × gain, 0, 1)`.
 
 ## Find devices
 
@@ -52,15 +53,15 @@ with hapbeat.connect() as hb:
         print(d.ip, d.address, d.firmware_version)
 ```
 
-## Keep intensities out of your firing code
+## Keep strengths out of your firing code
 
-Use an `EventMap` so `play("id")` resolves the default gain from the kit
+Use an `EventMap` so `play("id")` resolves the `clip_gain` from the kit
 manifest (the *tuning* side, separate from *firing*):
 
 ```python
 em = hapbeat.EventMap.from_manifest("my-kit/my-kit-manifest.json")
 with hapbeat.connect(event_map=em) as hb:
-    hb.play("sample-kit.sine_100hz")      # fires at the manifest's intensity
+    hb.play("sample-kit.sine_100hz")      # fires at the manifest's clip_gain
 ```
 
 ## Targeting specific devices

@@ -467,7 +467,7 @@ PAGE = r"""<!doctype html>
     <!-- Quick play -->
     <div class="card">
       <h2>Quick play</h2>
-      <div class="desc">Fire a single event. Move the slider for intensity.</div>
+      <div class="desc">Fire a single event. Move the slider for gain.</div>
       <div class="row">
         <div class="field" style="flex:2;"><label>Event id</label>
           <input id="play_event" class="mono" placeholder="(default)"></div>

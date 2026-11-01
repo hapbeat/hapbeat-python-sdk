@@ -2,7 +2,7 @@
 
 This shows the recommended Hapbeat Python project layout, mirroring the Unity
 SDK: the kit (the *haptic file* = manifest + audio) lives inside your project,
-and your code only ever calls events by id. The per-event details (intensity,
+and your code only ever calls events by id. The per-event details (clip_gain,
 loop, command vs clip) are authored in the kit -- not in your firing code.
 
     clip_project/
@@ -60,7 +60,8 @@ def main() -> int:
         hb.play("demo.rumble")
         time.sleep(1.0)
 
-        # Override the authored intensity at the call site if you need to.
+        # Scale the authored clip_gain at the call site if you need to
+        # (0.6 x 0.3 = 0.18 is sent).
         print("play demo.rumble at gain 0.3")
         hb.play("demo.rumble", gain=0.3)
         time.sleep(1.0)

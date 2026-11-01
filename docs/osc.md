@@ -15,7 +15,7 @@ hapbeat osc-bridge --listen 7702
 # with a haptic file: OSC events route command/clip and pick up per-event
 # target + gain, so the sender only needs the event id (recommended)
 hapbeat osc-bridge --listen 7702 --haptics haptics.json
-# or a kit folder (intensity/clip only, no targeting): --kit kits/my-kit
+# or a kit folder (clip_gain/clip only, no targeting): --kit kits/my-kit
 ```
 
 Or embed it:
@@ -45,7 +45,8 @@ Trailing arguments are optional (sensible defaults are used).
 
 - `event_id` — string; must exist in the kit on the device.
 - `target` — device address; empty string = broadcast (all devices).
-- `gain` — float 0..1.
+- `gain` — float, the app gain (0 or more, default 1); multiplied with the event's
+  `clip_gain` and the haptic file's `gain`, the product capped at 1.
 
 ## Example: TouchOSC as a wireless haptic remote
 

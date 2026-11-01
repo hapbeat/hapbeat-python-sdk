@@ -19,17 +19,24 @@ an optional extra.
 ## Core model: fire vs editing, linked by event id
 
 - **Fire side** (your code): *when/where* to play — `play` / `stop` / etc.
-- **Editing side** (the kit + haptic file): *what/how* — intensity, loop,
+- **Editing side** (the kit + haptic file): *what/how* — clip_gain, loop,
   command-vs-clip, which WAV, target.
-- They are linked only by **event id**. Keep intensities/targets out of firing
+- They are linked only by **event id**. Keep clip gains/targets out of firing
   code; put them in the kit (Studio-authored) and the haptic file.
 
 Two layers on the editing side:
 - **kit manifest** (`<kit>-manifest.json`, schema 2.0.0): Studio-generated kit
-  content — `intensity`, `loop`, `clip`, and which bucket (command vs clip). No
+  content — `clip_gain`, `loop`, `clip`, and which bucket (command vs clip). No
   targeting.
 - **haptic file** (`haptics.json`): an app-authored overlay that references a
-  kit and adds per-event `target` and a `gain` override.
+  kit and adds per-event `target` and a `gain` multiplier.
+
+Strength: the value sent is `clamp(clip_gain × app_gain, 0, 1)`. `clip_gain`
+(0..1, default 1) is the material strength from the kit manifest
+(`parameters.clip_gain`); `app_gain` is the haptic file's per-event `gain`
+times the `gain` passed to `play`. No factor is capped at 1 (a `gain` of 2 on a
+`clip_gain` of 0.5 sends 1.0); only the product is. The call's `gain`
+multiplies `clip_gain`, it never replaces it. Without a kit, `clip_gain` is 1.
 
 ## Install
 
@@ -47,7 +54,7 @@ your scripts — for code, use a venv `pip install`.
 import hapbeat
 
 with hapbeat.connect(app_name="MyApp") as hb:   # context manager closes cleanly
-    hb.play("sample-kit.sine_100hz", gain=0.5)             # gain 0..1; omit to use EventMap default
+    hb.play("sample-kit.sine_100hz", gain=0.5)             # app gain (x clip_gain); omit = 1, as authored
     hb.play("sample-kit.sine_100hz", pan=0.8)              # pan -1..+1 (left..right); command or clip
 ```
 
@@ -89,9 +96,9 @@ with hapbeat.connect(app_name="MyApp") as hb:   # context manager closes cleanly
 
 ```python
 em = hapbeat.EventMap.from_file("haptics.json")   # overlay (kit + per-event target/gain) — recommended
-em = hapbeat.EventMap.from_kit("kits/my-kit")     # kit only (intensity/clip; no targeting)
+em = hapbeat.EventMap.from_kit("kits/my-kit")     # kit only (clip_gain/clip; no targeting)
 em = hapbeat.EventMap.from_manifest(path_or_dict) # a single manifest
-em = hapbeat.EventMap.from_dict({"sample-kit.sine_100hz": 0.5})  # gains by hand (command only)
+em = hapbeat.EventMap.from_dict({"sample-kit.sine_100hz": 0.5})  # per-event gains by hand (command only)
 ```
 
 `haptics.json`:
@@ -105,9 +112,10 @@ em = hapbeat.EventMap.from_dict({"sample-kit.sine_100hz": 0.5})  # gains by hand
 }
 ```
 `kit` is resolved relative to the haptic file. Per-event keys: `target`, `gain`
-(overrides the manifest `intensity`), `loop`, `note`.
+(the app-side multiplier; multiplied with the manifest `clip_gain`, never
+written over it), `loop`, `note`.
 
-`EventDef` fields: `event_id`, `intensity`, `loop`, `device_wiper`, `streaming`,
+`EventDef` fields: `event_id`, `clip_gain` (manifest), `gain` (haptic file), `loop`, `device_wiper`, `streaming`,
 `clip`, `target`, `note`, `mode` (`"clip"`|`"command"`).
 
 ## Project layout (recommended)
@@ -151,12 +159,12 @@ bind_port=0, kit=None, haptics=None, clip_base=None, stream_send_ahead=0.15,
 unicast=True, device_ttl=None) -> Hapbeat`
 
 `Hapbeat`:
-- `play(event_id, gain=None, *, target=None, target_time_us=0, pan=0) -> bool | StreamPlayback`
+- `play(event_id, gain=1.0, *, target=None, target_time_us=0, pan=0) -> bool | StreamPlayback` — `gain` is the app gain (0 or more)
 - `stop(event_id, *, target=None) -> bool`
 - `stop_all(*, target=None) -> bool`
 - `ping() -> bool`
 - `connect_status(*, connected=True) -> bool`
-- `play_clip(event_id, gain=None, *, target=None, pan=0, loop=None) -> StreamPlayback | False`
+- `play_clip(event_id, gain=1.0, *, target=None, pan=0, loop=None) -> StreamPlayback | False`
 - `play_clip_file(path, gain=1.0, *, target=None, pan=0, loop=False) -> StreamPlayback | False`
 - `stream_pcm(pcm: bytes, *, sample_rate=16000, channels=1, gain=1.0, pan=0, loop=False, target=None) -> StreamPlayback`
 - `preload_clips()`
@@ -203,7 +211,7 @@ the phone targets — not the device's UDP 7700.
 
 ## Best practices
 
-- Put intensity in the kit/EventMap and target in the haptic file; keep them out
+- Put clip_gain in the kit/EventMap and target in the haptic file; keep them out
   of firing code so play(id) stays a one-liner.
 - Set `app_name` so the device OLED shows who is connected.
 - Use the context manager (or call `close()`); it tells the device the app left.
@@ -216,8 +224,8 @@ the phone targets — not the device's UDP 7700.
   deployed kit (the #1 cause), or `target` does not match your device (try `""`).
 - command events need the kit flashed to the device in Studio (the SDK never reads
   `install-clips/`); clip events work with no deploy.
-- `gain` is an absolute 0..1 value (the device clamps). Exception: `haptic_pad.py`
-  `--master` is a multiplier.
+- `gain` is the app gain, a multiplier on the kit's `clip_gain` (not an absolute
+  value); only the product `clip_gain × gain` is capped at 1.
 - Multi-homed PC: broadcast may exit the wrong NIC; ensure the Hapbeat LAN's NIC
   has the route.
 - An id in both `events` and `stream_events` => clip wins.

@@ -27,8 +27,8 @@ def make_kit(tmp_path: Path) -> Path:
         w.writeframes(struct.pack("<400h", *([1000] * 400)))
     manifest = {
         "schema_version": "2.0.0", "name": "demo-kit",
-        "events": {"tap.short": {"clip": "tap.wav", "parameters": {"intensity": 0.5}}},
-        "stream_events": {"rumble.long": {"clip": "buzz.wav", "parameters": {"intensity": 0.4}}},
+        "events": {"tap.short": {"clip": "tap.wav", "parameters": {"clip_gain": 0.5}}},
+        "stream_events": {"rumble.long": {"clip": "buzz.wav", "parameters": {"clip_gain": 0.4}}},
     }
     (kit / "demo-kit-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return kit
@@ -60,12 +60,13 @@ def test_from_file_merges_kit_and_overlay(tmp_path):
     assert em.kit_dir is not None  # resolved from the referenced kit
     tap = em.get("tap.short")
     assert tap.target == "player_1/chest"
-    assert tap.intensity == 0.8        # overlay gain overrides manifest 0.5
+    assert tap.gain == 0.8             # overlay gain is kept as the event gain
+    assert tap.clip_gain == 0.5        # ...and never written over the manifest clip_gain
     assert tap.streaming is False
     rumble = em.get("rumble.long")
     assert rumble.target == "*/back"
     assert rumble.streaming is True and rumble.clip == "buzz.wav"
-    assert rumble.intensity == 0.4     # not overridden -> manifest value
+    assert rumble.clip_gain == 0.4 and rumble.gain == 1.0
 
 
 def test_from_file_without_kit_is_pure_overlay(tmp_path):
@@ -75,7 +76,7 @@ def test_from_file_without_kit_is_pure_overlay(tmp_path):
     em = EventMap.from_file(hf)
     assert em.kit_dir is None
     ev = em.get("a.b")
-    assert ev.target == "x/y" and ev.intensity == 0.3 and ev.streaming is False
+    assert ev.target == "x/y" and ev.gain == 0.3 and ev.clip_gain == 1.0 and ev.streaming is False
 
 
 # ── play() honours per-event target ─────────────────────────────────
@@ -123,7 +124,7 @@ class FakeHb:
     def __init__(self):
         self.calls: list[tuple] = []
 
-    def play(self, event_id, gain=None, *, target=None, target_time_us=0, pan=0.0):
+    def play(self, event_id, gain=1.0, *, target=None, target_time_us=0, pan=0.0):
         self.calls.append(("play", event_id, gain, target, pan))
 
     def stop(self, event_id, *, target=None):
@@ -144,7 +145,7 @@ def test_osc_handlers_pass_none_target_when_omitted():
     # full arg list: target, target_time_us, gain, pan
     br._handle_play("/hapbeat/play", "demo.tap", "", 0, 0.4, -0.5)
     br._handle_stop_all("/hapbeat/stop-all")
-    assert hb.calls[0] == ("play", "demo.tap", None, None, 0.0)   # None -> overlay decides
-    assert hb.calls[1] == ("play", "demo.tap", None, "x/y", 0.0)  # explicit wins
+    assert hb.calls[0] == ("play", "demo.tap", 1.0, None, 0.0)    # None -> overlay decides
+    assert hb.calls[1] == ("play", "demo.tap", 1.0, "x/y", 0.0)   # explicit wins
     assert hb.calls[2] == ("play", "demo.tap", 0.4, None, -0.5)   # pan is the 5th OSC arg
     assert hb.calls[3] == ("stop_all", None)

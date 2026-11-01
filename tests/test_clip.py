@@ -43,8 +43,8 @@ def make_kit(tmp_path: Path) -> Path:
     write_wav(kit / "stream-clips" / "buzz.wav", frames=600)
     manifest = {
         "schema_version": "2.0.0", "name": "demo-kit",
-        "events": {"tap.short": {"clip": "tap.wav", "parameters": {"intensity": 0.8}}},
-        "stream_events": {"rumble.long": {"clip": "buzz.wav", "parameters": {"intensity": 0.5}}},
+        "events": {"tap.short": {"clip": "tap.wav", "parameters": {"clip_gain": 0.8}}},
+        "stream_events": {"rumble.long": {"clip": "buzz.wav", "parameters": {"clip_gain": 0.5}}},
     }
     (kit / "demo-kit-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return kit

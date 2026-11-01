@@ -36,13 +36,13 @@ device, the usual cause is an event id that does not exist in the deployed
 kit -- check the kit in Studio. `task_notifier.py --test` is a quick
 end-to-end check.
 
-## Gain vs. kit intensity
+## Gain vs. kit clip_gain
 
-`play(event_id, gain)` sends an absolute wire gain, clamped to 0..1 by the
-SDK. When `gain` is omitted, the event fires at **1.0** -- unless an
-`EventMap` is bound, in which case the kit manifest's authored `intensity`
-is used. The samples that take gain flags validate the 0..1 range up front
-so what you see is what the device gets (`haptic_pad`'s `--master` is a
+`play(event_id, gain)` takes the app gain, a multiplier (default 1). The SDK
+sends `clamp(clip_gain * gain, 0, 1)`: with an `EventMap` bound, `clip_gain` is
+the kit manifest's authored value; without one it is 1, so the gain is sent
+as is (capped at 1). These samples bind no EventMap and validate the 0..1
+range up front so what you see is what the device gets (`haptic_pad`'s `--master` is a
 multiplier instead and is clamped to its 0.1..1.0 range).
 
 ## Common flags

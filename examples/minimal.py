@@ -20,8 +20,8 @@ with hapbeat.connect(app_name="PyExample") as hb:
     for dev in hb.discover(timeout=1.5):
         print(f"found {dev.ip}  {dev.address or '?'}  fw={dev.firmware_version or '?'}")
 
-    # Fire at full gain (1.0), then again softer. To fire at the kit's
-    # authored intensity instead, bind an EventMap:
+    # Fire at full gain (1.0), then again softer. To scale by the kit's
+    # authored clip_gain, bind an EventMap:
     #   hb = hapbeat.connect(event_map=hapbeat.EventMap.from_manifest("..."))
     hb.play(EVENT_ID)
     time.sleep(0.5)

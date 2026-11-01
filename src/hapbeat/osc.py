@@ -65,7 +65,7 @@ class OscBridge:
             return
         target = str(args[1]) if len(args) >= 2 and args[1] != "" else None
         target_time = int(args[2]) if len(args) >= 3 else 0
-        gain = float(args[3]) if len(args) >= 4 else None
+        gain = float(args[3]) if len(args) >= 4 else 1.0
         pan = float(args[4]) if len(args) >= 5 else 0.0
         self.hb.play(event_id, gain, target=target, target_time_us=target_time,
                      pan=pan)

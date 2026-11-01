@@ -2,7 +2,7 @@
 
 The recommended way to structure a Hapbeat Python app, mirroring the Unity SDK:
 the **kit lives inside your project**, and your code calls events **by id only**.
-Per-event details (intensity, loop, command vs clip) are authored in the kit —
+Per-event details (clip_gain, loop, command vs clip) are authored in the kit —
 the *haptic file* — not in your firing code.
 
 ```
@@ -44,7 +44,7 @@ python examples/clip_project/app.py
 ```python
 import hapbeat
 hb = hapbeat.connect(app_name="ClipDemo", kit="kits/demo-kit")
-hb.play("demo.rumble")          # intensity 0.6, streamed — all from the kit
+hb.play("demo.rumble")          # clip_gain 0.6, streamed — all from the kit
 hb.play("demo.tap")             # command — device plays its clip
 ```
 

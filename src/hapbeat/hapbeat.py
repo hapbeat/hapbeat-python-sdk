@@ -2,7 +2,7 @@
 
 This is the *trigger* side of the SDK: anything (a research script, a game
 loop, an OSC handler, a UI callback) calls :meth:`Hapbeat.play` / ``stop`` to
-drive the device. The *tuning* side (default gains per event) is kept
+drive the device. The *tuning* side (clip gain and gain per event) is kept
 orthogonal in :class:`hapbeat.eventmap.EventMap` and linked only by event id —
 mirroring the Unity SDK's Trigger / EventMap split.
 
@@ -35,7 +35,7 @@ from typing import Callable, ClassVar, Optional, Union
 
 from . import protocol
 from .client import DEFAULT_BROADCAST, DEFAULT_PORT, UdpClient
-from .eventmap import EventDef, EventMap
+from .eventmap import EventDef, EventMap, send_gain
 from .stream import (
     LEGACY_STREAM_MODE,
     DeferredReason,
@@ -362,7 +362,7 @@ class Hapbeat:
     def play(
         self,
         event_id: str,
-        gain: Optional[float] = None,
+        gain: float = 1.0,
         *,
         target: Optional[str] = None,
         target_time_us: int = 0,
@@ -375,17 +375,16 @@ class Hapbeat:
         - **clip** event (manifest ``stream_events``) → the SDK streams the
           event's WAV from the kit's ``stream-clips/`` over UDP.
 
-        Either way the caller writes the same one-liner. ``gain`` is the wire
-        gain (0..1); when omitted, the bound :class:`EventMap` supplies the
-        per-event default (its manifest ``intensity``), else ``1.0``.
+        Either way the caller writes the same one-liner. ``gain`` is the
+        app-side multiplier (0 or more, 1 = as authored, may exceed 1). The
+        value sent is ``clamp(clip_gain × event gain × gain, 0, 1)``: the bound
+        :class:`EventMap` supplies the event's ``clip_gain`` (kit manifest)
+        and its own ``gain`` (haptic file), each 1.0 when unknown.
         ``pan`` is the left/right balance (-1 left, 0 centre, +1 right).
         ``target_time_us`` applies to command mode only. ``pan`` applies to
         both modes; clip-mode balance is mixed into the endpoint PCM.
         """
         ev = self.event_map.get(event_id) if self.event_map else None
-        if gain is None:
-            gain = ev.intensity if ev is not None else 1.0
-        gain = max(0.0, min(1.0, float(gain)))
         target_eff = self._effective_target(ev, target)
 
         if ev is not None and ev.streaming:
@@ -396,7 +395,7 @@ class Hapbeat:
             event_id,
             target=target_eff,
             target_time_us=target_time_us,
-            gain=gain,
+            gain=send_gain(ev, gain),
             pan=pan,
         )
         return self._send_routed(pkt, target_eff)
@@ -582,7 +581,7 @@ class Hapbeat:
     def play_clip(
         self,
         event_id: str,
-        gain: Optional[float] = None,
+        gain: float = 1.0,
         *,
         target: Optional[str] = None,
         pan: float = 0.0,
@@ -592,13 +591,13 @@ class Hapbeat:
 
         Usually you call :meth:`play`, which routes clip events here. The WAV
         is read once and cached. Returns ``False`` if the clip can't be found.
+        ``gain`` is the app-side multiplier as in :meth:`play`; the source's
+        PCM is scaled by ``clamp(clip_gain × event gain × gain, 0, 1)``.
         """
         ev = self.event_map.get(event_id) if self.event_map else None
         if ev is None or not ev.clip:
             logger.warning("clip event %r has no clip file", event_id)
             return False
-        if gain is None:
-            gain = ev.intensity
         wav = self._load_clip(event_id, ev)
         if wav is None:
             return False
@@ -606,7 +605,7 @@ class Hapbeat:
             wav.data,
             sample_rate=wav.sample_rate,
             channels=wav.channels,
-            gain=max(0.0, min(1.0, float(gain))),
+            gain=send_gain(ev, gain),
             pan=max(-1.0, min(1.0, float(pan))),
             loop=ev.loop if loop is None else loop,
             target=self._effective_target(ev, target),
@@ -1219,7 +1218,7 @@ def connect(
     Loading the EventMap (pick one):
       - ``haptics`` — a *haptic file* (overlay that references a kit and adds
         per-event target/gain); ``EventMap.from_file``. Recommended.
-      - ``kit`` — a kit folder; ``EventMap.from_kit`` (intensity/clip only,
+      - ``kit`` — a kit folder; ``EventMap.from_kit`` (clip_gain/clip only,
         no targeting).
     ``clip_base`` overrides where clip WAVs are read (default ``<kit>/stream-clips/``).
 

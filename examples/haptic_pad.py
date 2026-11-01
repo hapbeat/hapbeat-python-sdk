@@ -7,7 +7,7 @@ operator triggers sensations on a participant by hand.
 Key mapping comes from (first match wins):
     --map pad.json          explicit key -> event mapping (see below)
     --manifest <path>       first 9 events of a kit manifest, gains from
-                            their authored intensity
+                            their authored clip_gain
     --events a,b,c          plain list, keys 1..n, gain 1.0
 
 pad.json format ("loop": true marks events whose kit clip loops):
@@ -136,7 +136,7 @@ def load_pads(args: argparse.Namespace) -> list[Pad]:
         for key, event_id in zip(PAD_KEYS, ids):
             ev = em.get(event_id)
             pads.append(Pad(key=key, event_id=event_id,
-                            gain=ev.intensity, loop=ev.loop))
+                            gain=ev.clip_gain, loop=ev.loop))
         return pads
 
     if args.events:

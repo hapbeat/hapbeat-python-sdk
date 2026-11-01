@@ -17,6 +17,7 @@
 - lease の世代を使い切ったら、新しい incarnation で lease を取り直す。
 
 ### 変更
+- 強さの名前と式を contracts に合わせた（DEC-103）: Kit の manifest は `parameters.clip_gain` を読む（`intensity` は読まない）。`EventDef.intensity` → `clip_gain`、触覚ファイルの項目の `gain` は `EventDef.gain` に別に持つ。送る値は `clamp(clip_gain × 項目の gain × 呼ぶ時の gain, 0, 1)` で、呼ぶ時の `gain`（既定 1、上限なし）は `clip_gain` を置き換えず掛ける。`EventMap.add(event_id, clip_gain=…)`、`EventMap.from_dict` の値は項目の `gain`、OSC・CLI の `gain` を省いた時は 1。
 - 探索・keep-alive の PING を 8 byte に戻し、lease を求める 16 byte の拡張 PING は stream する（する見込みの）機器へ unicast だけで送る。lease は TTL の 1/3（CAPS の `lease_ttl_s` / 3、無ければ 5 s）ごとに更新し、最後の session の後も 15 s 保つ。8 byte の PING への応答では機器の分類を変えない。keep-alive の間隔を Stream Gen 2 の機器のために縮める処理は削除した。
 - PONG の lease tail を 1.x の規則で読む: 32 byte 以上・`HBS2`・extension_version 1 なら Stream Gen 2（先頭 32 byte だけ読み、reserved と未知の flag は見ない）、何も無ければ Stream Gen 1、それ以外は無視（`LEASE_TAIL_IGNORED`。機器ごとに 1 回警告）。
 - superseded の保留は、`lease_reissued` の付いた有効な lease（機器が再発行した ticket）か `reacquire_stream_ownership()` でだけ解く。
