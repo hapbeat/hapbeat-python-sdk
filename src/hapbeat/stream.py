@@ -213,11 +213,13 @@ class StreamPlayback:
         source_id: str,
         *,
         gain: float,
+        clip_gain: float = 1.0,
         pan: float,
         loop: bool,
     ) -> None:
         self._hub = hub
         self.id = source_id
+        self._clip_gain = clip_gain
         self._status = PlaybackStatus.DEFERRED
         self._deferred_reason: Optional[DeferredReason] = (
             DeferredReason.NO_RESOLVED_ENDPOINT
@@ -237,12 +239,23 @@ class StreamPlayback:
 
     @property
     def gain(self) -> float:
+        """App gain (0 or more, no upper limit). The source PCM is scaled by
+        ``clamp(clip_gain × gain, 0, 1)`` (contracts kit-format.md "Strength
+        formula"), so a later change never replaces the clip's clip_gain."""
         return self._gain
 
     @gain.setter
     def gain(self, value: float) -> None:
-        self._gain = _clamp(float(value), 0.0, 1.0)
-        self._hub._set_source_property(self.id, "gain", self._gain)
+        self._gain = max(0.0, float(value))
+        self._hub._set_source_property(
+            self.id, "gain", source_gain(self._clip_gain, self._gain)
+        )
+
+    @property
+    def clip_gain(self) -> float:
+        """Material strength of the source (the kit manifest ``clip_gain``,
+        0..1; 1 for a source without a kit)."""
+        return self._clip_gain
 
     @property
     def pan(self) -> float:
@@ -334,23 +347,31 @@ class StreamHub:
         sample_rate: int = SAMPLE_RATE,
         channels: int = 1,
         gain: float = 1.0,
+        clip_gain: float = 1.0,
         pan: float = 0.0,
         loop: bool = False,
         target: str = "",
         key: Optional[str] = None,
     ) -> StreamPlayback:
-        """Register a finite or looping PCM16 source and return its handle."""
+        """Register a finite or looping PCM16 source and return its handle.
+
+        ``gain`` is the app gain (0 or more, no upper limit) and ``clip_gain``
+        the material strength (0..1, default 1 = no kit); the source PCM is
+        scaled by ``clamp(clip_gain × gain, 0, 1)``.
+        """
         normalized = _normalize_pcm16(pcm, sample_rate=sample_rate, channels=channels)
         if not normalized:
             raise ValueError("pcm must contain at least one complete frame")
         source_id = uuid.uuid4().hex
-        gain_value = _clamp(float(gain), 0.0, 1.0)
+        gain_value = max(0.0, float(gain))
+        clip_gain_value = _clamp(float(clip_gain), 0.0, 1.0)
         pan_value = _clamp(float(pan), -1.0, 1.0)
         loop_value = bool(loop)
         playback = StreamPlayback(
             self,
             source_id,
             gain=gain_value,
+            clip_gain=clip_gain_value,
             pan=pan_value,
             loop=loop_value,
         )
@@ -358,7 +379,7 @@ class StreamHub:
             id=source_id,
             pcm=normalized,
             target=target,
-            gain=gain_value,
+            gain=source_gain(clip_gain_value, gain_value),
             pan=pan_value,
             loop=loop_value,
             key=key,
@@ -1163,3 +1184,8 @@ def _saturate_pcm16(value: float) -> int:
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
+
+
+def source_gain(clip_gain: float, gain: float) -> float:
+    """The value a source's PCM is scaled by: ``clamp(clip_gain × gain, 0, 1)``."""
+    return _clamp(clip_gain * gain, 0.0, 1.0)

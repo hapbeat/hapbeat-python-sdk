@@ -18,20 +18,23 @@ else — which device/body part it targets, how strong, command vs streamed clip
 comes from the **haptic file** ([haptics.json](haptics.json)) loaded by the
 bridge. So you re-aim or re-balance cues by editing one file, never the phone.
 
-`haptics.json` references the kit and adds per-event `target` / `gain`:
+`haptics.json` references the kit and adds per-event `target` / `gain`. `gain`
+is the app's multiplier on the kit's material strength (`clip_gain`): the device
+gets `clip_gain * gain` (capped at 1), so `1.0` plays the event as authored in
+the kit and `0.5` at half of it:
 
 ```json
 {
   "kit": "kits/demo-kit",
   "events": {
-    "demo.tap":    { "target": "player_1/chest", "gain": 0.8 },
-    "demo.rumble": { "target": "*/back",          "gain": 0.6 }
+    "demo.tap":    { "target": "player_1/chest", "gain": 1.0 },
+    "demo.rumble": { "target": "*/back",          "gain": 1.0 }
   }
 }
 ```
 
 This folder is self-contained: copy `osc_remote/` anywhere, swap `kits/demo-kit`
-for your own kit, and run. (`gain` 0.8 / `*/back` etc. are placeholders — set
+for your own kit, and run. (`gain` 1.0 / `*/back` etc. are placeholders — set
 `target` to match your device, or `""` to broadcast to all for a first test.)
 
 ## Run

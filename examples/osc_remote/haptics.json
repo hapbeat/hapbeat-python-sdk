@@ -2,7 +2,7 @@
   "_comment": "Haptic file (EventMap overlay). References the kit for clip_gain/clip; adds per-event target + gain (multiplied with clip_gain) so OSC senders just name an event id.",
   "kit": "kits/demo-kit",
   "events": {
-    "demo.tap":    { "target": "player_1/chest", "gain": 0.8 },
-    "demo.rumble": { "target": "*/back",          "gain": 0.6 }
+    "demo.tap":    { "target": "player_1/chest", "gain": 1.0 },
+    "demo.rumble": { "target": "*/back",          "gain": 1.0 }
   }
 }

@@ -16,6 +16,7 @@ import hapbeat
 import hapbeat.hapbeat as hapbeat_mod
 from hapbeat import protocol
 from hapbeat.eventmap import EventDef, EventMap, send_gain
+from hapbeat.stream import StreamHub
 
 
 class FakeUdpClient:
@@ -93,7 +94,9 @@ def test_play_clip_scales_source_by_clip_gain_times_gain(tmp_path, fake_client,
     em = EventMap.from_kit(make_kit(tmp_path, clip_gain))
     with hapbeat.connect(event_map=em, keepalive=False) as hb:
         playback = hb.play("rumble.long", gain)
-        assert playback.gain == pytest.approx(expected)
+        assert source_gain_of(hb._stream_hub, playback) == pytest.approx(expected)
+        assert playback.gain == pytest.approx(gain)  # the app gain
+        assert playback.clip_gain == pytest.approx(clip_gain)
         playback.stop()
 
 
@@ -125,7 +128,55 @@ def test_haptic_file_gain_multiplies_call_gain_and_clip_gain(tmp_path, fake_clie
         hb.play("tap.short", 0.5)
         assert play_gain(hb._client.sent[-1]) == pytest.approx(0.6)
         playback = hb.play("rumble.long", 0.5)
-        assert playback.gain == pytest.approx(0.6)
+        assert source_gain_of(hb._stream_hub, playback) == pytest.approx(0.6)
+        assert playback.gain == pytest.approx(0.75)  # event gain 1.5 x call gain 0.5
+        playback.stop()
+
+
+def source_gain_of(hub: StreamHub, playback) -> float:
+    """The scale the hub applies to a source's PCM."""
+    return hub._sources[playback.id].gain
+
+
+class NullSink:
+    def stream_begin_endpoint(self, endpoint): pass
+    def stream_data_endpoint(self, endpoint, offset, data): pass
+    def stream_end_endpoint(self, endpoint): pass
+
+
+def test_later_playback_gain_multiplies_clip_gain():
+    hub = StreamHub(NullSink(), lambda: [], send_ahead_sec=0.0)
+    try:
+        playback = hub.play_pcm(b"\0\0" * 160, gain=1.0, clip_gain=0.5)
+        assert source_gain_of(hub, playback) == pytest.approx(0.5)
+        playback.gain = 2
+        assert playback.gain == pytest.approx(2.0)  # the getter keeps the app gain
+        assert source_gain_of(hub, playback) == pytest.approx(1.0)
+        playback.gain = 0.5
+        assert source_gain_of(hub, playback) == pytest.approx(0.25)
+        playback.gain = -1
+        assert playback.gain == 0.0 and source_gain_of(hub, playback) == 0.0
+        playback.stop()
+    finally:
+        hub.close()
+
+
+def test_clip_event_playback_gain_change_keeps_clip_gain(tmp_path, fake_client):
+    em = EventMap.from_kit(make_kit(tmp_path, 0.5))
+    with hapbeat.connect(event_map=em, keepalive=False) as hb:
+        playback = hb.play("rumble.long")
+        playback.gain = 2
+        assert source_gain_of(hb._stream_hub, playback) == pytest.approx(1.0)
+        playback.gain = 0.5
+        assert source_gain_of(hb._stream_hub, playback) == pytest.approx(0.25)
+        playback.stop()
+
+
+def test_stream_pcm_without_kit_does_not_cap_app_gain(fake_client):
+    with hapbeat.connect(keepalive=False) as hb:
+        playback = hb.stream_pcm(b"\0\0" * 160, gain=1.5)
+        assert playback.gain == pytest.approx(1.5)
+        assert source_gain_of(hb._stream_hub, playback) == pytest.approx(1.0)
         playback.stop()
 
 

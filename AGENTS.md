@@ -193,7 +193,9 @@ the phone targets — not the device's UDP 7700.
 - PCM16 sources are normalized to **16 kHz stereo**. Multiple sources may run
   concurrently; matching sources are mixed into one wire session per endpoint.
 - `StreamPlayback` owns source-local status / deferred reason / gain / pan /
-  loop / idempotent stop. Stopping one source does not stop siblings.
+  loop / idempotent stop. Its `gain` is the app gain (0 or more, no upper
+  limit; a later `playback.gain = x` keeps the clip's `clip_gain`): the source
+  PCM is scaled by `clamp(clip_gain × gain, 0, 1)`. Stopping one source does not stop siblings.
 - Unknown targets are `Deferred(NoResolvedEndpoint)` until discovery resolves
   them. No STREAM packet uses broadcast.
 - Other `deferred_reason` values: `UNKNOWN_CLASS` (device has not answered the
