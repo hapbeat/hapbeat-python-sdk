@@ -214,12 +214,14 @@ class StreamPlayback:
         *,
         gain: float,
         clip_gain: float = 1.0,
+        event_gain: float = 1.0,
         pan: float,
         loop: bool,
     ) -> None:
         self._hub = hub
         self.id = source_id
         self._clip_gain = clip_gain
+        self._event_gain = event_gain
         self._status = PlaybackStatus.DEFERRED
         self._deferred_reason: Optional[DeferredReason] = (
             DeferredReason.NO_RESOLVED_ENDPOINT
@@ -239,16 +241,18 @@ class StreamPlayback:
 
     @property
     def gain(self) -> float:
-        """App gain (0 or more, no upper limit). The source PCM is scaled by
-        ``clamp(clip_gain × gain, 0, 1)`` (contracts kit-format.md "Strength
-        formula"), so a later change never replaces the clip's clip_gain."""
+        """The call's gain (0 or more, no upper limit). The source PCM is
+        scaled by ``clamp(clip_gain × event_gain × gain, 0, 1)`` (contracts
+        kit-format.md "Strength formula"), so a later change never replaces the
+        clip's clip_gain or the event's own gain."""
         return self._gain
 
     @gain.setter
     def gain(self, value: float) -> None:
         self._gain = max(0.0, float(value))
         self._hub._set_source_property(
-            self.id, "gain", source_gain(self._clip_gain, self._gain)
+            self.id, "gain",
+            source_gain(self._clip_gain, self._event_gain, self._gain),
         )
 
     @property
@@ -256,6 +260,12 @@ class StreamPlayback:
         """Material strength of the source (the kit manifest ``clip_gain``,
         0..1; 1 for a source without a kit)."""
         return self._clip_gain
+
+    @property
+    def event_gain(self) -> float:
+        """The event's own app-side gain (haptic file ``gain``; 1 for a
+        source without one). Fixed for the source's life."""
+        return self._event_gain
 
     @property
     def pan(self) -> float:
@@ -348,6 +358,7 @@ class StreamHub:
         channels: int = 1,
         gain: float = 1.0,
         clip_gain: float = 1.0,
+        event_gain: float = 1.0,
         pan: float = 0.0,
         loop: bool = False,
         target: str = "",
@@ -355,9 +366,12 @@ class StreamHub:
     ) -> StreamPlayback:
         """Register a finite or looping PCM16 source and return its handle.
 
-        ``gain`` is the app gain (0 or more, no upper limit) and ``clip_gain``
-        the material strength (0..1, default 1 = no kit); the source PCM is
-        scaled by ``clamp(clip_gain × gain, 0, 1)``.
+        ``gain`` is the call's gain and ``event_gain`` the event's own gain
+        (haptic file), both 0 or more with no upper limit (their product is
+        the app gain); ``clip_gain`` is the material strength (0..1, default
+        1 = no kit). The source PCM is scaled by
+        ``clamp(clip_gain × event_gain × gain, 0, 1)``; the playback's ``gain``
+        changes only the call's factor.
         """
         normalized = _normalize_pcm16(pcm, sample_rate=sample_rate, channels=channels)
         if not normalized:
@@ -365,6 +379,7 @@ class StreamHub:
         source_id = uuid.uuid4().hex
         gain_value = max(0.0, float(gain))
         clip_gain_value = _clamp(float(clip_gain), 0.0, 1.0)
+        event_gain_value = max(0.0, float(event_gain))
         pan_value = _clamp(float(pan), -1.0, 1.0)
         loop_value = bool(loop)
         playback = StreamPlayback(
@@ -372,6 +387,7 @@ class StreamHub:
             source_id,
             gain=gain_value,
             clip_gain=clip_gain_value,
+            event_gain=event_gain_value,
             pan=pan_value,
             loop=loop_value,
         )
@@ -379,7 +395,7 @@ class StreamHub:
             id=source_id,
             pcm=normalized,
             target=target,
-            gain=source_gain(clip_gain_value, gain_value),
+            gain=source_gain(clip_gain_value, event_gain_value, gain_value),
             pan=pan_value,
             loop=loop_value,
             key=key,
@@ -1186,6 +1202,13 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
-def source_gain(clip_gain: float, gain: float) -> float:
-    """The value a source's PCM is scaled by: ``clamp(clip_gain × gain, 0, 1)``."""
-    return _clamp(clip_gain * gain, 0.0, 1.0)
+def source_gain(*factors: float) -> float:
+    """The strength sent for these factors (clip_gain, event gain, call gain):
+    ``clamp(product, 0, 1)``. Negative factors count as 0; a product that is
+    NaN or infinite is 0 (contracts kit-format.md "Strength formula")."""
+    value = 1.0
+    for factor in factors:
+        value *= max(0.0, float(factor))
+    if not math.isfinite(value):
+        return 0.0
+    return min(1.0, value)

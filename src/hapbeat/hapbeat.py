@@ -593,8 +593,8 @@ class Hapbeat:
         is read once and cached. Returns ``False`` if the clip can't be found.
         ``gain`` is the app-side multiplier as in :meth:`play`; the source's
         PCM is scaled by ``clamp(clip_gain × event gain × gain, 0, 1)``. The
-        returned playback's ``gain`` is the app gain (event gain × ``gain``)
-        and keeps the clip_gain when changed later.
+        returned playback's ``gain`` is the call's ``gain`` only: changing it
+        later keeps the clip_gain and the event gain.
         """
         ev = self.event_map.get(event_id) if self.event_map else None
         if ev is None or not ev.clip:
@@ -607,8 +607,9 @@ class Hapbeat:
             wav.data,
             sample_rate=wav.sample_rate,
             channels=wav.channels,
-            gain=max(0.0, ev.gain) * max(0.0, float(gain)),
+            gain=gain,
             clip_gain=ev.clip_gain,
+            event_gain=ev.gain,
             pan=max(-1.0, min(1.0, float(pan))),
             loop=ev.loop if loop is None else loop,
             target=self._effective_target(ev, target),

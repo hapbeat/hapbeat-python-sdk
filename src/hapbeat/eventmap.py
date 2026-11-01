@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
+from .stream import source_gain
+
 
 @dataclass
 class EventDef:
@@ -215,14 +217,13 @@ def send_gain(ev: Optional[EventDef], gain: float) -> float:
     ``clamp(clip_gain × app_gain, 0, 1)`` where ``app_gain`` is the event's own
     ``gain`` times the call's ``gain`` (kit-format.md "Strength formula").
 
-    No factor is capped at 1 (only negatives become 0); only the product is.
-    Without an event (no EventMap, or an id it does not know) ``clip_gain`` and
-    the event gain are 1.
+    No factor is capped at 1 (only negatives become 0); only the product is,
+    and a product that is NaN or infinite is 0. Without an event (no EventMap,
+    or an id it does not know) ``clip_gain`` and the event gain are 1.
     """
     clip_gain = ev.clip_gain if ev is not None else 1.0
     event_gain = ev.gain if ev is not None else 1.0
-    value = max(0.0, clip_gain) * max(0.0, event_gain) * max(0.0, float(gain))
-    return min(1.0, value)
+    return source_gain(clip_gain, event_gain, gain)
 
 
 def _looks_like_json(s: Union[str, Path]) -> bool:

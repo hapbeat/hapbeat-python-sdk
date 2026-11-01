@@ -16,7 +16,7 @@ import hapbeat
 import hapbeat.hapbeat as hapbeat_mod
 from hapbeat import protocol
 from hapbeat.eventmap import EventDef, EventMap, send_gain
-from hapbeat.stream import StreamHub
+from hapbeat.stream import StreamHub, source_gain
 
 
 class FakeUdpClient:
@@ -129,7 +129,21 @@ def test_haptic_file_gain_multiplies_call_gain_and_clip_gain(tmp_path, fake_clie
         assert play_gain(hb._client.sent[-1]) == pytest.approx(0.6)
         playback = hb.play("rumble.long", 0.5)
         assert source_gain_of(hb._stream_hub, playback) == pytest.approx(0.6)
-        assert playback.gain == pytest.approx(0.75)  # event gain 1.5 x call gain 0.5
+        assert playback.gain == pytest.approx(0.5)  # the call's gain only
+        assert playback.event_gain == pytest.approx(1.5)
+        playback.stop()
+
+
+def test_later_playback_gain_keeps_haptic_file_gain(tmp_path, fake_client):
+    kit = make_kit(tmp_path, 0.8)
+    hf = tmp_path / "haptics.json"
+    hf.write_text(json.dumps({"kit": kit.name, "events": {"rumble.long": {"gain": 1.5}}}),
+                  encoding="utf-8")
+    with hapbeat.connect(event_map=EventMap.from_file(hf), keepalive=False) as hb:
+        playback = hb.play("rumble.long", 1.0)
+        assert source_gain_of(hb._stream_hub, playback) == pytest.approx(1.0)
+        playback.gain = 0.5  # 0.8 x 1.5 x 0.5
+        assert source_gain_of(hb._stream_hub, playback) == pytest.approx(0.6)
         playback.stop()
 
 
@@ -178,6 +192,38 @@ def test_stream_pcm_without_kit_does_not_cap_app_gain(fake_client):
         assert playback.gain == pytest.approx(1.5)
         assert source_gain_of(hb._stream_hub, playback) == pytest.approx(1.0)
         playback.stop()
+
+
+@pytest.mark.parametrize("factors", [
+    (0.0, float("inf")),
+    (float("inf"), 0.5),
+    (float("nan"), 1.0),
+    (0.5, float("nan")),
+    (1.0, 1.0, float("inf")),
+])
+def test_non_finite_product_is_zero(factors):
+    assert source_gain(*factors) == 0.0
+
+
+def test_non_finite_gain_sends_zero(fake_client):
+    em = EventMap({"a.b": EventDef(event_id="a.b", clip_gain=0.0)})
+    assert send_gain(em.get("a.b"), float("inf")) == 0.0
+    with hapbeat.connect(keepalive=False) as hb:
+        hb.play("unknown.event", float("inf"))
+        assert play_gain(hb._client.sent[-1]) == 0.0
+        hb.play("unknown.event", float("nan"))
+        assert play_gain(hb._client.sent[-1]) == 0.0
+
+
+def test_non_finite_playback_gain_mixes_zero():
+    hub = StreamHub(NullSink(), lambda: [], send_ahead_sec=0.0)
+    try:
+        playback = hub.play_pcm(b"\0\0" * 160, gain=1.0, clip_gain=0.0)
+        playback.gain = float("inf")
+        assert source_gain_of(hub, playback) == 0.0
+        playback.stop()
+    finally:
+        hub.close()
 
 
 def test_send_gain_does_not_cap_factors():

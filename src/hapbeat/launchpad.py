@@ -130,7 +130,7 @@ class App:
         event = str(p.get("event", "")).strip()
         if not event:
             return {"ok": False, "error": "event id is empty"}
-        ok = self.hb.play(event, _num(p, "gain", 0.5, 0, 1),
+        ok = self.hb.play(event, _num(p, "gain", 1.0, 0, 2),
                           target=str(p.get("target", "")),
                           pan=_num(p, "pan", 0.0, -1, 1))
         return {"ok": bool(ok)}
@@ -151,8 +151,8 @@ class App:
         accent_event = str(p.get("accent_event", "")).strip() or event
         bpm = _num(p, "bpm", 100, 20, 400)
         beats = int(_num(p, "beats", 4, 0, 32))
-        gain = _num(p, "gain", 0.5, 0, 1)
-        accent_gain = _num(p, "accent_gain", 1.0, 0, 1)
+        gain = _num(p, "gain", 0.5, 0, 2)
+        accent_gain = _num(p, "accent_gain", 1.0, 0, 2)
         target = str(p.get("target", ""))
 
         def run(stop: threading.Event) -> None:
@@ -217,7 +217,7 @@ class App:
         if not text:
             return {"ok": False, "error": "text is empty"}
         unit = 1.2 / _num(p, "wpm", 12, 1, 60)
-        gain = _num(p, "gain", 0.7, 0, 1)
+        gain = _num(p, "gain", 0.7, 0, 2)
         target = str(p.get("target", ""))
 
         def run(stop: threading.Event) -> None:
@@ -471,8 +471,8 @@ PAGE = r"""<!doctype html>
       <div class="row">
         <div class="field" style="flex:2;"><label>Event id</label>
           <input id="play_event" class="mono" placeholder="(default)"></div>
-        <div class="field"><label>Gain <span id="play_gain_v">0.50</span></label>
-          <input id="play_gain" type="range" min="0" max="1" step="0.05" value="0.5"
+        <div class="field"><label>Gain <span id="play_gain_v">1.00</span></label>
+          <input id="play_gain" type="range" min="0" max="2" step="0.05" value="1"
                  oninput="play_gain_v.textContent=(+this.value).toFixed(2)"></div>
       </div>
       <button onclick="play()">Play</button>

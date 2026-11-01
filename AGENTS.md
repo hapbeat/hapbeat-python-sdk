@@ -35,7 +35,7 @@ Strength: the value sent is `clamp(clip_gain × app_gain, 0, 1)`. `clip_gain`
 (0..1, default 1) is the material strength from the kit manifest
 (`parameters.clip_gain`); `app_gain` is the haptic file's per-event `gain`
 times the `gain` passed to `play`. No factor is capped at 1 (a `gain` of 2 on a
-`clip_gain` of 0.5 sends 1.0); only the product is. The call's `gain`
+`clip_gain` of 0.5 sends 1.0); only the product is. A product that is NaN or infinite sends 0. The call's `gain`
 multiplies `clip_gain`, it never replaces it. Without a kit, `clip_gain` is 1.
 
 ## Install
@@ -193,9 +193,10 @@ the phone targets — not the device's UDP 7700.
 - PCM16 sources are normalized to **16 kHz stereo**. Multiple sources may run
   concurrently; matching sources are mixed into one wire session per endpoint.
 - `StreamPlayback` owns source-local status / deferred reason / gain / pan /
-  loop / idempotent stop. Its `gain` is the app gain (0 or more, no upper
-  limit; a later `playback.gain = x` keeps the clip's `clip_gain`): the source
-  PCM is scaled by `clamp(clip_gain × gain, 0, 1)`. Stopping one source does not stop siblings.
+  loop / idempotent stop. Its `gain` is the call's gain (0 or more, no upper
+  limit); the clip's `clip_gain` and the haptic file's `event_gain` are fixed,
+  so a later `playback.gain = x` keeps them: the source PCM is scaled by
+  `clamp(clip_gain × event_gain × gain, 0, 1)` (a NaN / infinite product is 0). Stopping one source does not stop siblings.
 - Unknown targets are `Deferred(NoResolvedEndpoint)` until discovery resolves
   them. No STREAM packet uses broadcast.
 - Other `deferred_reason` values: `UNKNOWN_CLASS` (device has not answered the
