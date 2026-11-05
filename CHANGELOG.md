@@ -2,7 +2,7 @@
 
 `hapbeat-python-sdk`（import 名: `hapbeat`）の主要な変更点をまとめます。
 
-## Unreleased（1.0.0 に含める）
+## 1.0.0 — 2026-11-06
 
 全製品の通信を 1.x にそろえる変更（DEC-096）。対応する contracts は 1.0.0（未 tag。`46f246e` 時点）。開発版は `1.0.0.dev1`。
 
