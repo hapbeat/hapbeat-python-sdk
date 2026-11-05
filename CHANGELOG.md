@@ -4,7 +4,7 @@
 
 ## 1.0.0 — 2026-11-06
 
-全製品の通信を 1.x にそろえる変更（DEC-096）。対応する contracts は 1.0.0（未 tag。`46f246e` 時点）。開発版は `1.0.0.dev1`。
+全製品の通信を 1.x にそろえる変更（DEC-096）。対応する contracts は `v1.0.0`。
 
 ### 追加
 - 能力申告: 照合済みの PONG を初めて受けた機器、`firmware_version`・`device_boot_id` が変わった機器へ CAPS_REQ（0x12）を unicast で送り、CAPS（0x13）を `Device.caps`（`DeviceCaps`）に入れる。応答が無ければ 500 ms ごとに計 3 回送り、その後は `DeviceCaps.NONE`（能力申告なし）として、その boot の間は再要求しない。SDK の major（`protocol.SDK_MAJOR`）より新しい `generation` の機器を見つけたら、SDK の更新を促す警告を 1 回出す。
