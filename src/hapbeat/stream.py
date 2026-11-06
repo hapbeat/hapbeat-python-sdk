@@ -116,10 +116,14 @@ class EndpointStreamMode:
     """How an endpoint may be streamed now: ``lease=None`` is Stream Gen 1
     (firmware before Stream Gen 2), otherwise Stream Gen 2 under that
     device-issued lease. ``mono`` marks a device with one haptic output
-    (CAPS haptic_channels 1): source pan is not applied there."""
+    (CAPS haptic_channels 1): source pan is not applied there.
+    ``lease_fresh`` is False while a Stream Gen 2 lease was last confirmed too
+    long ago for a new session: the device may have let it expire, so a new
+    session waits for the refresh (a running one continues)."""
 
     lease: Optional[StreamLease] = None
     mono: bool = False
+    lease_fresh: bool = True
 
 
 LEGACY_STREAM_MODE = EndpointStreamMode()
@@ -540,15 +544,7 @@ class StreamHub:
             session = self._current_session_locked(ip, envelope)
             if session is None:
                 return 0
-            key = (session.endpoint.ip, session.endpoint.port)
-            excluded = 0
-            for source_id in tuple(session.cursors):
-                source = self._sources.get(source_id)
-                if source is not None:
-                    source.stopped_endpoints.add(key)
-                    if not source.loop:
-                        source.played = True  # counts as played there
-                    excluded += 1
+            excluded = self._exclude_locked(session.endpoint, session.cursors)
             session.cursors.clear()
             session.joined.clear()
             session.gains.clear()
@@ -557,6 +553,34 @@ class StreamHub:
                 self._reconcile_locked()
         self._wake.set()
         return excluded
+
+    def end_for_stop_all(self, target: str) -> int:
+        """The client is sending STOP_ALL to ``target``: it ends the session of
+        every device it matches (stream-session.md Receiver ordering). End ours
+        there now, with END, instead of letting them linger: a source started
+        within the linger would join a generation the device has stopped, and
+        every DATA would be rejected (ERROR STREAM_STOPPED). The next source
+        begins a new generation, so a new Playback plays as usual
+        (sdk-multi-stream.md §6.13). A source still in such a session (one the
+        stop did not cover, of another target) leaves that endpoint for good,
+        as STREAM_STOPPED would make it; so do the cursors kept there for a
+        lease renewal. Returns the number of sessions ended."""
+        with self._lock:
+            ended = 0
+            for endpoint, session in tuple(self._sessions.items()):
+                if not protocol.address_matches(target, endpoint.address):
+                    continue
+                self._exclude_locked(endpoint, session.cursors)
+                self._sessions.pop(endpoint)
+                self._end_session_locked(session)
+                ended += 1
+            for endpoint in tuple(self._carried):
+                if protocol.address_matches(target, endpoint.address):
+                    self._exclude_locked(endpoint, self._carried.pop(endpoint)[1])
+            if not self._closed:
+                self._reconcile_locked()
+        self._wake.set()
+        return ended
 
     def end_endpoint(self, ip: str, envelope: bytes) -> bool:
         """STREAM_TARGET_MISMATCH: end the current session (END now). Its
@@ -576,6 +600,20 @@ class StreamHub:
         explicit ownership reacquisition is a new start)."""
         with self._lock:
             self._carried.clear()
+
+    def _exclude_locked(self, endpoint: StreamEndpoint, source_ids) -> int:
+        """STOP_ALL ended ``endpoint``'s session: these sources never rejoin
+        that device; a finite one counts as played there (§6.13)."""
+        key = (endpoint.ip, endpoint.port)
+        excluded = 0
+        for source_id in tuple(source_ids):
+            source = self._sources.get(source_id)
+            if source is not None:
+                source.stopped_endpoints.add(key)
+                if not source.loop:
+                    source.played = True
+                excluded += 1
+        return excluded
 
     def _current_session_locked(
         self, ip: str, envelope: bytes
@@ -739,6 +777,15 @@ class StreamHub:
                     continue
                 session = self._sessions.get(endpoint)
                 if session is None:
+                    if mode.lease is not None and not mode.lease_fresh:
+                        # The device may have let this unused lease expire:
+                        # wait for the refresh the client asks for now, not a
+                        # BEGIN it would answer with STREAM_LEASE_INVALID.
+                        reasons.add(DeferredReason.LEASE_UNAVAILABLE)
+                        carried = self._carried.get(endpoint)
+                        if carried is not None and source.id in carried[1]:
+                            source.waiting_endpoints.add(endpoint)
+                        continue
                     session = self._begin_session_locked(endpoint, mode)
                     if session is None:
                         source.waiting_endpoints.add(endpoint)

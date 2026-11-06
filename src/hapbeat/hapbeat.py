@@ -45,6 +45,7 @@ from .stream import (
     StreamPlayback,
 )
 from .stream_lease import (
+    LEASE_FRESH_MARGIN,
     LEASE_REFRESH_INTERVAL,
     LEASE_RETRY_INTERVAL,
     LEASE_TTL,
@@ -418,6 +419,10 @@ class Hapbeat:
         else:
             self._stream_hub.stop_target(target)
         target_eff = self._resolve_target(target)
+        # STOP_ALL ends the stream session of every device it reaches: end
+        # ours there now (END), so the next stream begins a new generation
+        # instead of joining one the device has stopped (§6.13)
+        self._stream_hub.end_for_stop_all(target_eff)
         pkt = protocol.build_stop_all(self._next_seq(), target=target_eff)
         return self._send_routed(pkt, target_eff)
 
@@ -474,8 +479,9 @@ class Hapbeat:
     def _maybe_lease_ping(self, ip: str, now: float) -> bool:
         """Send a lease request to ``ip`` when one is due: every
         LEASE_RETRY_INTERVAL until there is a usable lease (or a Stream Gen 1
-        class), then every TTL / 3 (also while superseded: the device re-issues
-        a ticket only in reply to an extended PING)."""
+        class) and while that lease is too old for a new session (see
+        LEASE_FRESH_MARGIN), then every TTL / 3 (also while superseded: the
+        device re-issues a ticket only in reply to an extended PING)."""
         if not self._opened:
             return False
         with self._devices_lock:
@@ -491,7 +497,10 @@ class Hapbeat:
                         state.client_incarnation != incarnation
                         or (
                             not state.lease_superseded
-                            and state.usable_gen2_lease(incarnation) is None
+                            and (
+                                state.usable_gen2_lease(incarnation) is None
+                                or not self._lease_fresh_locked(ip, state, now)
+                            )
                         )
                     )
                 )
@@ -506,6 +515,19 @@ class Hapbeat:
         device = self._devices.get(ip)
         ttl = device.caps.lease_ttl_s if device is not None and device.caps else 0
         return ttl / 3.0 if ttl > 0 else LEASE_REFRESH_INTERVAL
+
+    def _lease_fresh_locked(
+        self, ip: str, state: EndpointLeaseState, now: float
+    ) -> bool:
+        """Whether ``state``'s lease was confirmed recently enough for a new
+        session: within the device's lease TTL (CAPS, else 15 s) less
+        LEASE_FRESH_MARGIN. The device lets an unused lease expire one TTL
+        after its last extended PING; BEGIN under such a lease is answered
+        with STREAM_LEASE_INVALID and costs the start of the stream."""
+        device = self._devices.get(ip)
+        ttl = device.caps.lease_ttl_s if device is not None and device.caps else 0
+        ttl = ttl if ttl > 0 else LEASE_TTL
+        return now - state.accepted_at < ttl - min(LEASE_FRESH_MARGIN, ttl / 2.0)
 
     def _on_endpoint_wanted(self, endpoint: StreamEndpoint) -> None:
         """StreamHub (under its lock): ``endpoint`` has a session or matches a
@@ -719,7 +741,8 @@ class Hapbeat:
     ) -> Union[EndpointStreamMode, DeferredReason]:
         """Stream Gen 1, Gen 2 under its usable lease, or why its sources
         defer (class unknown, lease unavailable or of an old incarnation,
-        superseded)."""
+        superseded). A Gen 2 lease confirmed too long ago is reported with
+        ``lease_fresh=False``: a new session waits for its refresh."""
         with self._devices_lock:
             state = self._stream_states.get(endpoint.ip)
             incarnation = self._client_incarnation
@@ -728,6 +751,9 @@ class Hapbeat:
                 device is not None
                 and device.caps is not None
                 and device.caps.haptic_channels == 1
+            )
+            fresh = state is not None and self._lease_fresh_locked(
+                endpoint.ip, state, time.monotonic()
             )
         if state is None or state.endpoint_class is EndpointClass.UNKNOWN:
             return DeferredReason.UNKNOWN_CLASS
@@ -740,7 +766,7 @@ class Hapbeat:
         lease = state.usable_gen2_lease(incarnation)
         if lease is None:
             return DeferredReason.LEASE_UNAVAILABLE
-        return EndpointStreamMode(lease, mono)
+        return EndpointStreamMode(lease, mono, lease_fresh=fresh)
 
     # Stream Gen 1: firmware before Stream Gen 2 only (exact unicast, END
     # without payload)
@@ -923,6 +949,7 @@ class Hapbeat:
                 return
             dev = self._devices.get(ip) or Device(ip=ip)
             if decision is PongLeaseDecision.ACCEPT:
+                state = dataclasses.replace(state, accepted_at=now)
                 self._stream_states[ip] = state
                 dev.stream_class = state.endpoint_class
             dev.name = pong.get("device_name", dev.name)

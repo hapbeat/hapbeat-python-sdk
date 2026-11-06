@@ -2,6 +2,12 @@
 
 `hapbeat-python-sdk`（import 名: `hapbeat`）の主要な変更点をまとめます。
 
+## 1.0.1 — 未リリース（開発中は `1.0.1.dev1`）
+
+### 修正
+- `stop_all()` の直後に始めた clip・stream が鳴らなかった。`stop_all()` は source を止めて STOP_ALL を送るが、機器の session を 0.31 s 残していたので、その間に始めた source は、機器が STOP_ALL で終えた世代の session に入り、DATA がすべて ERROR STREAM_STOPPED で断られ、その Playback は Stopped になっていた（1.0.0 で実機で確認）。STOP_ALL が届く機器の session を、STOP_ALL の前に END してすぐ閉じるようにした。次の source は新しい世代で始まる（sdk-multi-stream.md §6.13）。`stop_all(target=…)` で止めなかった別の target の source は、その機器からは外れ、他の機器で続く（機器が STOP_ALL で止めるのと同じ）。
+- 15 s 以上 lease の更新が無かった後の最初の stream が、先頭の約 160 ms を失っていた。機器は、使っていない lease を最後の拡張 PING から 15 s で失効させるが、SDK は古い lease のまま BEGIN と send-ahead を送り、STREAM_LEASE_INVALID の後は取り直した lease で続きから鳴らしていた。lease の応答を受けた時刻を記録し、新しい session は、lease が TTL − 1 s（既定 14 s）より古ければ、取り直しの応答を待ってから先頭から始める。その間の Playback は `Deferred(LEASE_UNAVAILABLE)` で、lease の要求は 0.5 s ごとに送る。再生中の session はそのまま続ける（機器は再生中の lease を失効させない）。
+
 ## 1.0.0 — 2026-11-06
 
 全製品の通信を 1.x にそろえる変更（DEC-096）。対応する contracts は `v1.0.0`。

@@ -34,6 +34,12 @@ LEASE_REFRESH_INTERVAL = 5.0
 # While an endpoint has no usable lease yet (unknown class, lease invalid), the
 # extended PING is retried this often.
 LEASE_RETRY_INTERVAL = 0.5
+# The device lets an unused lease expire one TTL after its last extended PING.
+# A new session begins only under a lease confirmed within the TTL less this
+# margin (the PING's travel time); an older one waits for the next matched
+# reply, asked for every LEASE_RETRY_INTERVAL. A running session keeps its
+# lease alive on the device and is not affected.
+LEASE_FRESH_MARGIN = 1.0
 
 
 @dataclass(frozen=True)
@@ -95,6 +101,9 @@ class EndpointLeaseState:
     # echoed timestamp of the last accepted matched reply, across both classes:
     # a reply to an older-or-equal request never changes class or lease again
     last_accepted_timestamp_us: int = 0
+    # time.monotonic() when that reply was accepted (set by the client): how
+    # long ago the device last confirmed the lease (see LEASE_FRESH_MARGIN)
+    accepted_at: float = 0.0
 
     def usable_gen2_lease(self, current_incarnation: int) -> Optional[StreamLease]:
         """The lease Stream Gen 2 BEGIN/DATA/END may carry now, or None."""
